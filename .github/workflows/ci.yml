@@ -86,7 +86,11 @@ jobs:
                 echo "ERROR: built test binary not found" >&2
                 exit 1
             fi
-            "$TESTBIN" > /tmp/openbsd-privileged.log 2>&1
+            if ! "$TESTBIN" > /tmp/openbsd-privileged.log 2>&1; then
+                cat /tmp/openbsd-privileged.log
+                echo "ERROR: privileged test run failed" >&2
+                exit 1
+            fi
             cat /tmp/openbsd-privileged.log
             if grep -q 'SKIP .*requires root' /tmp/openbsd-privileged.log; then
                 echo "ERROR: privileged tests were unexpectedly skipped" >&2
