@@ -4,7 +4,8 @@
 --
 -- OpenBSD's memory-handling extensions:
 --
--- * @mimmutable(2)@: permanently forbid writes to a memory region;
+-- * @mimmutable(2)@: permanently forbid future changes to the
+--   protection or mapping of a memory region;
 -- * @explicit_bzero(3)@ and @freezero(3)@: securely erase
 --   native-memory regions;
 -- * @timingsafe_bcmp(3)@ and @timingsafe_memcmp(3)@:
@@ -36,17 +37,17 @@ import Foreign.Ptr (Ptr, castPtr)
 import System.OpenBSD.Internal (c_explicit_bzero, c_freezero, c_mimmutable,
                                 c_timingsafe_bcmp, c_timingsafe_memcmp)
 
--- | Permanently forbid changes to the given byte buffer, as
--- @mimmutable(2)@.
+-- | Permanently forbid future changes to the protection or mapping
+-- of the given byte buffer, as @mimmutable(2)@.
 --
--- The buffer's memory becomes read-only: reads keep working, and any
--- attempt to write it faults the process.  The change is permanent
--- and cannot be undone for that memory.  This is the hardening used
--- by OpenBSD programs to protect static data (for example JIT output
--- and lookup tables) from corruption.
+-- The buffer's memory is marked immutable: subsequent @mprotect(2)@,
+-- @munmap(2)@, @madvise(2)@, @msync(2)@, @mmap(2)@ and
+-- @minherit(2)@ operations on it fail with @EPERM@.  Reads and
+-- writes to the memory itself remain allowed; the mechanism protects
+-- the /mapping/, not the contents.  The change is permanent.
 --
--- Allowed under the @stdio@ pledge promise.  A zero-length buffer
--- fails with @EINVAL@, matching the native call.
+-- Allowed under the @stdio@ pledge promise.  An invalid range fails
+-- with the native @EINVAL@.
 immutableBytes :: ByteString -> IO ()
 immutableBytes bytes =
     BS.useAsCStringLen bytes $ \(buffer, len) ->

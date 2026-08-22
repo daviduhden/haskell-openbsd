@@ -219,7 +219,7 @@ execChild executable searchPath arguments environment = do
 -- itself is closed too, as are any runtime-managed descriptors above
 -- it; afterwards the caller must not perform Handle-based I/O on the
 -- closed descriptors (or must rebuild the relevant Handles).  A
--- negative argument fails with the native @EINVAL@.
+-- descriptor beyond the table fails with the native @EBADF@.
 --
 -- Allowed under the @stdio@ pledge promise.
 closeFrom :: Fd -> IO ()
