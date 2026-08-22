@@ -14,6 +14,7 @@
  */
 
 #include <stdlib.h>
+#include <unistd.h>
 
 #if !defined(__OpenBSD__)
 #error "haskell-openbsd requires OpenBSD"
@@ -29,4 +30,18 @@ void
 hs_resetproctitle(void)
 {
 	setproctitle(NULL);
+}
+
+/*
+ * Restrict the process to the empty promise set and exit.  Used by
+ * the test suite to verify that pledge("") allows only _exit(2):
+ * no Haskell code runs between the pledge call and the exit, so the
+ * runtime cannot violate the fresh restriction.
+ */
+void
+hs_pledge_empty_then_exit(void)
+{
+	if (pledge("", NULL) == -1)
+		_exit(1);
+	_exit(0);
 }

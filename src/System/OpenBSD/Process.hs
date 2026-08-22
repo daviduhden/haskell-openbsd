@@ -79,14 +79,19 @@ defaultDaemonOptions = DaemonOptions
     , redirectStandardStreams = True
     }
 
--- | Daemonize the process: detach from the controlling terminal and
--- run in the background, with the default @DaemonOptions@.
+-- | Daemonize the given action: run it in a background process that
+-- is detached from the controlling terminal, with the default
+-- @DaemonOptions@.
 --
--- Equivalent to @daemon(3)@ with @nochdir == 0@ and @noclose == 0@.
-daemonize :: IO ()
+-- Equivalent to calling @daemon(3)@ with @nochdir == 0@ and
+-- @noclose == 0@ and then running the action in the resulting
+-- daemon process.
+daemonize :: IO () -> IO ()
 daemonize = daemonizeWith defaultDaemonOptions
 
--- | Daemonize the process with explicit options.
+-- | Daemonize the given action with explicit options.  The action
+-- runs in the newly detached child process; the original process
+-- exits, exactly as with @daemon(3)@.
 --
 -- The implementation deliberately does /not/ call libc @daemon(3)@:
 -- that function forks and then exits the parent with a raw C
@@ -97,7 +102,7 @@ daemonize = daemonizeWith defaultDaemonOptions
 -- runtime-aware primitives:
 --
 -- > forkProcess (setsid; chdir("/") if requested; redirect 0\/1\/2
--- > to /dev/null if requested)
+-- > to /dev/null if requested; run the action)
 --
 -- and the original process exits with @exit(3)@ so the runtime shuts
 -- down cleanly.
@@ -121,11 +126,13 @@ daemonize = daemonizeWith defaultDaemonOptions
 --
 -- Modern service supervision commonly expects foreground operation;
 -- only call this when detachment is actually required.
-daemonizeWith :: DaemonOptions -> IO ()
-daemonizeWith options = do
+daemonizeWith :: DaemonOptions -> IO () -> IO ()
+daemonizeWith options daemonBody = do
     _ <- forkProcess $ do
         daemonizeChild options
+        daemonBody
         exitImmediately ExitSuccess
+    exitImmediately ExitSuccess
     exitImmediately ExitSuccess
 
 daemonizeChild :: DaemonOptions -> IO ()
