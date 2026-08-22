@@ -64,7 +64,7 @@ jobs:
             cabal build all
             cabal test all --test-show-details=direct
             cabal check
-            cabal haddock all --haddock-options=--verbosity=1
+            cabal haddock all --haddock-options=--no-warnings
             cabal sdist
             SDIST_TAR=$(ls dist-newstyle/sdist/openbsd-*.tar.gz | head -n 1)
             rm -rf /tmp/sdist-check
