@@ -29,7 +29,7 @@ import System.Environment (getArgs)
 import System.Exit (ExitCode(..), exitWith)
 import System.IO (BufferMode(..), IOMode(..), hClose, hFlush, hGetContents,
                   hGetLine, hPutChar, hPutStrLn, hSetBuffering,
-                  hSetBinaryMode, openFile, stderr, stdout)
+                  hSetBinaryMode, openFile, stdout)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Posix.Files (groupExecuteMode, groupReadMode,
                            otherExecuteMode, otherReadMode, ownerExecuteMode,
@@ -266,21 +266,60 @@ nulRejectionTests =
 -- pledge tests
 
 -- | After pledging the empty promise set only @_exit(2)@ is allowed.
--- This test must not use 'exitImmediately' from the @unix@ package:
--- it calls @exit(3)@, whose atexit handlers write to stdio and would
--- be killed by the pledge.  A raw @_exit(2)@ is used instead.
+-- The probe is a tiny C program (pledge + _exit, no GHC runtime and
+-- no fork involved), so the result reflects the kernel restriction
+-- alone.
 pledgeEmptyTest :: IO Result
 pledgeEmptyTest = do
+    probe <- pledgeEmptyProbeFixture
+    output <- captureOutput probe []
+    removeFile probe
+    case output of
+        Left e -> pure (Fail ("probe failed: " ++ e))
+        Right _ -> pure Pass
+
+-- | The same property through a forked Haskell child that calls the
+-- C shim; failures carry the shim's progress log for diagnosis.
+pledgeEmptyForkTest :: IO Result
+pledgeEmptyForkTest = do
     child <- forkProcess $ do
         c_hsPledgeEmptyThenExit
         c__exit 1
     status <- getProcessStatus True False child
+    diagnostic <- try (readFile "/tmp/openbsd-pledge-empty-probe.log")
+        :: IO (Either IOException String)
     case status of
         Just (Exited ExitSuccess) -> pure Pass
         Just (Exited (ExitFailure _)) -> pure (Fail "pledge \"\" was rejected")
         Just (Terminated signal _) ->
-            pure (Fail ("child was terminated by signal " ++ show signal))
+            pure (Fail ("child was terminated by signal " ++ show signal
+                ++ ", probe log: " ++ either (const "<none>") id diagnostic))
         _ -> pure (Fail "child vanished")
+
+pledgeEmptyProbeFixture :: IO FilePath
+pledgeEmptyProbeFixture = do
+    let cPath = "/tmp/openbsd-pledge-empty-probe.c"
+        binPath = "/tmp/openbsd-pledge-empty-probe"
+    writeFile cPath (unlines
+        [ "#include <signal.h>"
+        , "#include <unistd.h>"
+        , "int"
+        , "main(void)"
+        , "{"
+        , "    sigset_t set;"
+        , "    sigfillset(&set);"
+        , "    (void)sigprocmask(SIG_BLOCK, &set, NULL);"
+        , "    if (pledge(\"\", NULL) == -1)"
+        , "        _exit(3);"
+        , "    _exit(0);"
+        , "}"
+        ])
+    compiled <- captureOutput "/usr/bin/cc" ["-o", binPath, cPath]
+    removeFile cPath
+    case compiled of
+        Left e -> fail ("cc failed: " ++ e)
+        Right _ -> pure ()
+    pure binPath
 
 pledgeNullTest :: IO Result
 pledgeNullTest = inChild "pledge-null" $ do
@@ -746,6 +785,7 @@ pureTests =
 runtimeTests :: [(String, IO Result)]
 runtimeTests =
     [ ("pledge: empty promise list restricts to _exit", pledgeEmptyTest)
+    , ("pledge: empty promise list in a forked child", pledgeEmptyForkTest)
     , ("pledge: NULL arguments change nothing", pledgeNullTest)
     , ("pledge: NULL promises with empty exec promises", pledgeNullExecEmptyTest)
     , ("pledge: promise increase fails with EPERM", pledgeIncreaseTest)
