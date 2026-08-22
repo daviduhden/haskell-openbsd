@@ -218,8 +218,8 @@ execChild executable searchPath arguments environment = do
 -- the descriptors to keep reserved at the low numbers.  The argument
 -- itself is closed too, as are any runtime-managed descriptors above
 -- it; afterwards the caller must not perform Handle-based I/O on the
--- closed descriptors (or must rebuild the relevant Handles).  A
--- descriptor beyond the table fails with the native @EBADF@.
+-- closed descriptors (or must rebuild the relevant Handles).  On OpenBSD 7.9, a
+-- descriptor beyond the table is a harmless no-op.
 --
 -- Allowed under the @stdio@ pledge promise.
 closeFrom :: Fd -> IO ()

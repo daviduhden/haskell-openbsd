@@ -49,8 +49,10 @@ getRtable = Rtable . fromIntegral <$> c_getrtable
 -- The documented privilege rule is asymmetric: an unprivileged
 -- process may change the domain while it is @0@ (the default), but
 -- once the domain is non-zero, only the superuser may change it
--- (@EPERM@ otherwise).  The @id@ pledge promise is required.  This
--- is a process-wide change but not a monotonic restriction: a
+-- (@EPERM@ otherwise).  The target domain must exist: on a default
+-- system only domain @0@ is configured, and selecting another fails
+-- with the native @EINVAL@.  The @id@ pledge promise is required.
+-- This is a process-wide change but not a monotonic restriction: a
 -- sufficiently privileged process can change the domain again later.
 -- Sockets created after the change live in the new domain.
 setRtable :: Rtable -> IO ()
