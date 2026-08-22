@@ -475,10 +475,12 @@ it:
 
 * installs the native OpenBSD Haskell toolchain (GHC and
   cabal-install) with `pkg_add`;
-* `cabal update`, `cabal build all`, `cabal test all`, `cabal check`,
-  `cabal haddock all` and `cabal sdist`, executed as an unprivileged
-  `builder` user, and the generated source distribution is itself
-  built and tested;
+* `cabal update`, `cabal build all`, `cabal test all`, `cabal check`
+  and `cabal sdist`, executed as an unprivileged `builder` user, and
+  the generated source distribution is itself built and tested;
+  Haddock is currently skipped there because the OpenBSD-packaged GHC
+  9.10 / Haddock toolchain crashes while building this package's
+  documentation on both amd64 and arm64;
 * runs the test suite again as `root`, and fails if the
   privilege-dropping tests are skipped or do not pass, so the real,
   effective and saved UID/GID drops and the inability to regain root

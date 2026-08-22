@@ -196,9 +196,9 @@ captureOutput prog args = do
         hSetBinaryMode h True
         s <- hGetContents h
         _ <- evaluate (length s)
+        hClose h
         pure s
     status <- getProcessStatus True False child
-    closeFd readFd
     case output of
         Nothing -> pure (Left "timed out reading child output")
         Just out -> case status of
@@ -382,9 +382,9 @@ execCapture prog args = do
         hSetBinaryMode h True
         captured <- hGetContents h
         _ <- evaluate (length captured)
+        hClose h
         pure captured
     status <- getProcessStatus True False child
-    closeFd readFd
     pure (status, maybe "" id output)
 
 -- | The supported fork architecture under the threaded RTS:
@@ -697,9 +697,9 @@ issetugidSuidExecTest = requireRoot $ do
         hSetBinaryMode h True
         captured <- hGetContents h
         _ <- evaluate (length captured)
+        hClose h
         pure captured
     _ <- getProcessStatus True False child
-    closeFd readFd
     removeFile probe
     case output of
         Just "1\n" -> pure Pass
@@ -731,7 +731,6 @@ getpeereidNotSockTest = inChild "getpeereid-notsock" $ do
     fd <- handleToFd nullHandle
     result <- try (getPeerCredentials fd)
     closeFd fd
-    hClose nullHandle
     case result of
         Left (_ :: IOException) -> pure ()
         Right _ -> fail "getpeereid succeeded on a regular file"
@@ -778,8 +777,8 @@ setproctitleObservableTest = do
                     hPutChar controlHandle 'x'
                     hFlush controlHandle
                     _ <- getProcessStatus True False child
-                    closeFd outputRead
-                    closeFd controlWrite
+                    hClose outHandle
+                    hClose controlHandle
                     pure $ case withTitle of
                         Left e -> Fail e
                         Right out
@@ -1110,6 +1109,7 @@ daemonizeTest = do
         h <- fdToHandle readFd
         s <- hGetContents h
         _ <- evaluate (length s)
+        hClose h
         pure s
     status <- getProcessStatus True False helper
     case (output, status) of
@@ -1141,6 +1141,7 @@ daemonizePreserveTest = do
         h <- fdToHandle readFd
         s <- hGetContents h
         _ <- evaluate (length s)
+        hClose h
         pure s
     status <- getProcessStatus True False helper
     case (output, status) of
