@@ -25,20 +25,20 @@ import Foreign.C.Types (CInt(..))
 import System.Directory (copyFile, createDirectoryIfMissing,
                          doesDirectoryExist, doesFileExist,
                          getCurrentDirectory, removeDirectory, removeFile)
-import System.Environment (getArgs)
+import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
 import System.IO (BufferMode(..), IOMode(..), hClose, hFlush, hGetContents,
                   hGetLine, hPutChar, hPutStr, hPutStrLn, hSetBuffering,
                   hSetBinaryMode, hWaitForInput, openFile, stderr, stdin,
                   stdout)
-import System.IO.Error (isDoesNotExistError, isPermissionError, isUserError)
+import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Posix.Files (groupExecuteMode, groupReadMode,
                            otherExecuteMode, otherReadMode, ownerExecuteMode,
                            ownerReadMode, ownerWriteMode, setFileMode,
                            setOwnerAndGroup, setUserIDMode, unionFileModes)
 import System.Posix.Directory (changeWorkingDirectory)
 import System.Posix.IO (closeFd, createPipe, dupTo, fdToHandle, handleToFd,
-                        stdError, stdInput, stdOutput)
+                        stdInput, stdOutput)
 import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
                              forkProcess, getProcessGroupID, getProcessID,
                              getProcessStatus)
@@ -57,6 +57,11 @@ import System.OpenBSD
 
 foreign import ccall unsafe "unistd.h _exit"
     c__exit :: CInt -> IO ()
+
+-- Provided by the library's cbits: pledge("") followed by _exit(2)
+-- with no Haskell code in between.
+foreign import ccall unsafe "hs_pledge_empty_then_exit"
+    c_hsPledgeEmptyThenExit :: IO ()
 
 -- AF_UNIX and SOCK_STREAM are pinned at 1 by the OpenBSD ABI
 -- (see socket(2)); the test suite binds socketpair(2) itself rather
@@ -162,9 +167,9 @@ captureOutput prog args = do
     (readFd, writeFd) <- createPipe
     child <- forkProcess $ do
         closeFd readFd
-        dupTo writeFd stdOutput
+        _ <- dupTo writeFd stdOutput
         closeFd writeFd
-        executeFile prog True args Nothing
+        _ <- executeFile prog True args Nothing
         exitImmediately (ExitFailure 127)
     closeFd writeFd
     output <- timeout 60000000 $ do
@@ -191,11 +196,7 @@ requireRoot action = do
         else pure (Skip "requires root privileges")
 
 getProgPath :: IO FilePath
-getProgPath = do
-    args <- getArgs
-    case args of
-        (prog : _) -> pure prog
-        [] -> fail "no argv[0] available"
+getProgPath = getProgName
 
 -- Pure tests
 
@@ -251,10 +252,8 @@ nulRejectionTests =
 pledgeEmptyTest :: IO Result
 pledgeEmptyTest = do
     child <- forkProcess $ do
-        result <- try (pledgeParts (Just []) Nothing)
-        case result of
-            Left (_ :: SomeException) -> c__exit 1
-            Right () -> c__exit 0
+        c_hsPledgeEmptyThenExit
+        c__exit 1
     status <- getProcessStatus True False child
     case status of
         Just (Exited ExitSuccess) -> pure Pass
@@ -558,8 +557,8 @@ setproctitleObservableTest = do
     child <- forkProcess $ do
         closeFd controlWrite
         closeFd outputRead
-        dupTo controlRead stdInput
-        dupTo outputWrite stdOutput
+        _ <- dupTo controlRead stdInput
+        _ <- dupTo outputWrite stdOutput
         hSetBuffering stdout LineBuffering
         setProcessTitle marker
         putStrLn "ready"
@@ -668,13 +667,12 @@ daemonizeTest = do
         closeFd readFd
         report <- fdToHandle writeFd
         hSetBuffering report LineBuffering
-        daemonize
-        ok1 <- sessionCheck
-        ok2 <- cwdCheck "/"
-        ok3 <- stdFdsOpenCheck
-        hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
-        hFlush report
-        exitImmediately ExitSuccess
+        daemonize $ do
+            ok1 <- sessionCheck
+            ok2 <- cwdCheck "/"
+            ok3 <- stdFdsOpenCheck
+            hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
+            hFlush report
     closeFd writeFd
     output <- timeout 60000000 $ do
         h <- fdToHandle readFd
@@ -700,13 +698,12 @@ daemonizePreserveTest = do
         daemonizeWith defaultDaemonOptions
             { changeDirectoryToRoot = False
             , redirectStandardStreams = False
-            }
-        ok1 <- sessionCheck
-        ok2 <- cwdCheck originalCwd
-        ok3 <- stdFdsOpenCheck
-        hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
-        hFlush report
-        exitImmediately ExitSuccess
+            } $ do
+            ok1 <- sessionCheck
+            ok2 <- cwdCheck originalCwd
+            ok3 <- stdFdsOpenCheck
+            hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
+            hFlush report
     closeFd writeFd
     output <- timeout 60000000 $ do
         h <- fdToHandle readFd

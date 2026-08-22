@@ -304,7 +304,7 @@ pledge promise and must be used before pledging.
 ```haskell
 setProcessTitle "mydaemon: serving"  -- setproctitle(3)
 resetProcessTitle                   -- setproctitle(NULL)
-daemonize                           -- detach, chdir "/", stdio -> /dev/null
+daemonize serve                     -- run "serve" detached from the terminal
 ```
 
 Titles are passed to `setproctitle(3)` only as data through a fixed
@@ -312,15 +312,17 @@ Titles are passed to `setproctitle(3)` only as data through a fixed
 can never become format strings.  Titles are limited to 2048 bytes and
 work under the `stdio` pledge promise.
 
-`daemonize` deliberately does not call libc `daemon(3)`: that function
-forks and exits the parent with a raw C `_exit(2)` behind the GHC
-runtime, which is unsafe, particularly with the threaded runtime.
-Instead it reproduces the behavior with the runtime-aware
-`forkProcess` and exits the original process cleanly.  `daemonizeWith`
-takes positive `DaemonOptions` (`changeDirectoryToRoot`,
-`redirectStandardStreams`) instead of the inverted
-`nochdir`/`noclose` integers.  Daemonization is explicit and never
-automatic: foreground operation (preferred under modern service
+`daemonize` takes the daemon body as its argument: the body runs in
+the newly detached child process and the original process exits,
+exactly like `daemon(3)`.  It deliberately does not call libc
+`daemon(3)`: that function forks and exits the parent with a raw C
+`_exit(2)` behind the GHC runtime, which is unsafe, particularly with
+the threaded runtime.  Instead it reproduces the behavior with the
+runtime-aware `forkProcess` and exits the original process cleanly.
+`daemonizeWith` takes positive `DaemonOptions`
+(`changeDirectoryToRoot`, `redirectStandardStreams`) instead of the
+inverted `nochdir`/`noclose` integers.  Daemonization is explicit and
+never automatic: foreground operation (preferred under modern service
 supervision such as rc.d) is fully supported.
 
 ## Random
