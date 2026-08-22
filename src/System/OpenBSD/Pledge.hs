@@ -29,7 +29,7 @@ module System.OpenBSD.Pledge
 import Control.Monad (when)
 import Foreign.C.Error (throwErrno)
 import Foreign.C.String (CString, withCString)
-import Foreign.C.Types (CInt)
+import Foreign.C.Types (CInt(..))
 import Foreign.Ptr (nullPtr)
 
 #if defined(openbsd_HOST_OS)
