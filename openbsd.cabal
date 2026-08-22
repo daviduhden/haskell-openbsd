@@ -21,7 +21,6 @@ author:             James Hobson, David Uhden Collado
 maintainer:         David Uhden Collado
 extra-doc-files:
     README.md
-    CHANGELOG.md
 
 source-repository head
     type:     git
