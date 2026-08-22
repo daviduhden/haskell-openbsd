@@ -1,22 +1,52 @@
 cabal-version:      2.4
 name:               openbsd
-version:            0.1.0.0
-
-synopsis: extra OpenBSD system-calls
-
--- A longer description of the package.
-description: Adding missing OpenBSD systemcalls and some functions so that it is easy to follow openBSD's programming guidelines for security
-
-bug-reports:        https://github.com/yobson/haskell-openbsd/issues
+version:            0.2.0.0
+synopsis:           OpenBSD security facilities: pledge(2), unveil(2), privilege dropping
+description:
+    Haskell bindings for the OpenBSD-specific security interfaces and
+    the privilege-separation practice of OpenBSD daemons:
+    .
+    * pledge(2): restrict the system operations of a process
+    * unveil(2): restrict the filesystem view of a process
+    * privilege dropping: the setgroups(2) / setresgid(2) /
+      setresuid(2) sequence used by OpenBSD base-system daemons
+    .
+    The package can only be built and used on OpenBSD.
+category:           System
+homepage:           https://github.com/daviduhden/haskell-openbsd
+bug-reports:        https://github.com/daviduhden/haskell-openbsd/issues
 license:            BSD-3-Clause
 license-file:       LICENSE
-author:             James Hobson
-maintainer:         james@hobson.space
-extra-source-files: CHANGELOG.md
+author:             James Hobson, David Uhden Collado
+maintainer:         David Uhden Collado
+extra-doc-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+    type:     git
+    location: https://github.com/daviduhden/haskell-openbsd
 
 library
-    exposed-modules:  System.OpenBSD
-
-    build-depends:    base <5
+    exposed-modules:
+        System.OpenBSD
+        System.OpenBSD.Pledge
+        System.OpenBSD.Unveil
+        System.OpenBSD.Privileges
     hs-source-dirs:   src
+    build-depends:
+        base >= 4.11 && < 5,
+        unix  >= 2.7  && < 2.9
     default-language: Haskell2010
+    ghc-options:      -Wall
+
+test-suite openbsd-tests
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    hs-source-dirs:   test
+    build-depends:
+        base,
+        unix,
+        openbsd
+    default-language: Haskell2010
+    ghc-options:      -Wall

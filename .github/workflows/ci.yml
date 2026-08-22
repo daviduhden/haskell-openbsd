@@ -1,0 +1,92 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  openbsd-79-amd64:
+    name: OpenBSD 7.9 (amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and test on OpenBSD 7.9
+        uses: vmactions/openbsd-vm@e6c68b637a12e83519688d115d57d5b0b53923cd  # v1.4.6
+        with:
+          release: "7.9"
+          copyback: false
+          prepare: |
+            set -eu
+
+            echo "== VM environment =="
+            uname -a
+            uname -m
+            sysctl kern.version
+
+            echo "== Installing the Haskell toolchain =="
+            pkg_add ghc cabal-install
+
+            echo "== Toolchain versions =="
+            ghc --version
+            cabal --version
+
+            echo "== Creating unprivileged build user =="
+            groupadd builder
+            useradd -m -g builder -s /bin/sh builder
+            chown -R builder:builder "$GITHUB_WORKSPACE"
+            printf 'permit nopass root as builder\n' > /etc/doas.conf
+
+          run: |
+            set -eu
+            cd "$GITHUB_WORKSPACE"
+
+            echo "== Unprivileged build and tests =="
+            cat > /tmp/openbsd-build.ksh <<'EOF'
+            set -eu
+            cabal update
+            cabal build all
+            cabal test all --test-show-details=direct
+            cabal check
+            cabal haddock all
+            EOF
+            chown builder /tmp/openbsd-build.ksh
+            doas -u builder /bin/ksh /tmp/openbsd-build.ksh
+
+            echo "== Privileged tests as root =="
+            TESTBIN=$(find dist-newstyle -type f -name openbsd-tests -perm -111 | head -n 1)
+            if [ -z "$TESTBIN" ]; then
+                echo "ERROR: built test binary not found" >&2
+                exit 1
+            fi
+            "$TESTBIN" > /tmp/openbsd-privileged.log 2>&1
+            cat /tmp/openbsd-privileged.log
+            if grep -q 'SKIP .*requires root' /tmp/openbsd-privileged.log; then
+                echo "ERROR: privileged tests were unexpectedly skipped" >&2
+                exit 1
+            fi
+            for test_name in \
+                'ok   priv: dropPrivileges fully drops identity (root)' \
+                'ok   priv: Initgroups policy (root)' \
+                'ok   priv: id promise can be removed after dropping (root)'; do
+                if ! grep -qF "$test_name" /tmp/openbsd-privileged.log; then
+                    echo "ERROR: privileged test did not pass: $test_name" >&2
+                    exit 1
+                fi
+            done
+            echo "Privileged tests executed and passed."
