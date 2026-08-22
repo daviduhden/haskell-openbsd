@@ -22,23 +22,22 @@ import Control.Exception (IOException, SomeException, displayException,
 import Control.Monad (forM_, unless, void, when)
 import Data.List (isInfixOf, nub)
 import Foreign.C.Types (CInt(..))
-import System.Directory (copyFile, createDirectoryIfMissing,
+import System.Directory (createDirectoryIfMissing,
                          doesDirectoryExist, doesFileExist,
                          getCurrentDirectory, removeDirectory, removeFile)
-import System.Environment (getArgs, getProgName)
+import System.Environment (getArgs)
 import System.Exit (ExitCode(..), exitWith)
 import System.IO (BufferMode(..), IOMode(..), hClose, hFlush, hGetContents,
-                  hGetLine, hPutChar, hPutStr, hPutStrLn, hSetBuffering,
-                  hSetBinaryMode, hWaitForInput, openFile, stderr, stdin,
-                  stdout)
+                  hGetLine, hPutChar, hPutStrLn, hSetBuffering,
+                  hSetBinaryMode, openFile, stderr, stdout)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Posix.Files (groupExecuteMode, groupReadMode,
                            otherExecuteMode, otherReadMode, ownerExecuteMode,
                            ownerReadMode, ownerWriteMode, setFileMode,
                            setOwnerAndGroup, setUserIDMode, unionFileModes)
 import System.Posix.Directory (changeWorkingDirectory)
-import System.Posix.IO (closeFd, createPipe, dupTo, fdToHandle, handleToFd,
-                        stdInput, stdOutput)
+import System.Posix.IO (closeFd, createPipe, dup, dupTo, fdToHandle,
+                        handleToFd, stdError, stdInput, stdOutput)
 import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
                              forkProcess, getProcessGroupID, getProcessID,
                              getProcessStatus)
@@ -195,8 +194,29 @@ requireRoot action = do
         then action
         else pure (Skip "requires root privileges")
 
-getProgPath :: IO FilePath
-getProgPath = getProgName
+-- | Build a tiny C probe that prints issetugid(2), using the
+-- base-system compiler.  This avoids depending on how the test
+-- executable was invoked (argv[0] is not reliable under cabal test).
+issetugidProbeFixture :: IO FilePath
+issetugidProbeFixture = do
+    let cPath = "/tmp/openbsd-issetugid-probe.c"
+        binPath = "/tmp/openbsd-issetugid-probe"
+    writeFile cPath (unlines
+        [ "#include <stdio.h>"
+        , "#include <unistd.h>"
+        , "int"
+        , "main(void)"
+        , "{"
+        , "    printf(\"%d\\n\", issetugid());"
+        , "    return 0;"
+        , "}"
+        ])
+    compiled <- captureOutput "/usr/bin/cc" ["-o", binPath, cPath]
+    removeFile cPath
+    case compiled of
+        Left e -> fail ("cc failed: " ++ e)
+        Right _ -> pure ()
+    pure binPath
 
 -- Pure tests
 
@@ -484,10 +504,8 @@ issetugidPlainTest = inChild "issetugid-false" $ do
 -- untainted.
 issetugidPlainExecTest :: IO Result
 issetugidPlainExecTest = do
-    prog <- getProgPath
-    let probe = "/tmp/openbsd-issetugid-plain-probe"
-    copyFile prog probe
-    output <- captureOutput probe ["--issetugid-probe"]
+    probe <- issetugidProbeFixture
+    output <- captureOutput probe []
     removeFile probe
     case output of
         Left e -> pure (Fail ("probe failed: " ++ e))
@@ -498,9 +516,7 @@ issetugidPlainExecTest = do
 -- whenever the executed file carries the set-ID bits.
 issetugidSuidExecTest :: IO Result
 issetugidSuidExecTest = requireRoot $ do
-    prog <- getProgPath
-    let probe = "/tmp/openbsd-issetugid-suid-probe"
-    copyFile prog probe
+    probe <- issetugidProbeFixture
     rootEntry <- getUserEntryForName "root"
     let suidMode :: FileMode
         suidMode = foldl1 unionFileModes
@@ -510,7 +526,7 @@ issetugidSuidExecTest = requireRoot $ do
             , setUserIDMode ]
     setOwnerAndGroup probe (userID rootEntry) (userGroupID rootEntry)
     setFileMode probe suidMode
-    output <- captureOutput probe ["--issetugid-probe"]
+    output <- captureOutput probe []
     removeFile probe
     case output of
         Left e -> pure (Fail ("probe failed: " ++ e))
@@ -647,16 +663,19 @@ sessionCheck = (==) <$> getProcessGroupID <*> getProcessID
 cwdCheck :: FilePath -> IO Bool
 cwdCheck expected = (== expected) <$> getCurrentDirectory
 
--- | Standard descriptors are considered usable when the std Handles
--- still operate: stdin answers without blocking, and stdout\/stderr
--- accept writes.  This avoids version-churny fd-option queries and
--- verifies actual usability rather than mere openness.
-stdFdsOpenCheck :: IO Bool
-stdFdsOpenCheck = do
-    rIn <- try (hWaitForInput stdin 0 >> pure ()) :: IO (Either IOException ())
-    rOut <- try (hPutStr stdout "" >> hFlush stdout) :: IO (Either IOException ())
-    rErr <- try (hPutStr stderr "" >> hFlush stderr) :: IO (Either IOException ())
-    pure (all (either (const False) (const True)) [rIn, rOut, rErr])
+-- | Standard descriptors are considered open when dup(2) succeeds
+-- on each of them.  This probes the raw descriptors directly,
+-- without involving the RTS IO manager (whose state after nested
+-- forks is not the point of this test).
+stdFdsOpenCheck :: IO [Bool]
+stdFdsOpenCheck = mapM checkFdOpen [stdInput, stdOutput, stdError]
+
+checkFdOpen :: Fd -> IO Bool
+checkFdOpen fd = do
+    result <- try (dup fd) :: IO (Either IOException Fd)
+    case result of
+        Left _ -> pure False
+        Right duped -> closeFd duped >> pure True
 
 -- | The daemonized child reports via an inherited pipe; the original
 -- process exits inside 'daemonize', exactly like daemon(3).
@@ -670,8 +689,8 @@ daemonizeTest = do
         daemonize $ do
             ok1 <- sessionCheck
             ok2 <- cwdCheck "/"
-            ok3 <- stdFdsOpenCheck
-            hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
+            fds <- stdFdsOpenCheck
+            hPutStrLn report ("checks " ++ show ([ok1, ok2] ++ fds))
             hFlush report
     closeFd writeFd
     output <- timeout 60000000 $ do
@@ -683,7 +702,7 @@ daemonizeTest = do
     case (output, status) of
         (Nothing, _) -> pure (Fail "timed out waiting for the daemonized child")
         (_, Just (Exited ExitSuccess)) ->
-            expect (output == Just "checks [True,True,True]\n")
+            expect (output == Just "checks [True,True,True,True,True]\n")
                 ("unexpected daemon report: " ++ show output)
         _ -> pure (Fail ("daemonize helper failed: " ++ show status))
 
@@ -701,8 +720,8 @@ daemonizePreserveTest = do
             } $ do
             ok1 <- sessionCheck
             ok2 <- cwdCheck originalCwd
-            ok3 <- stdFdsOpenCheck
-            hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
+            fds <- stdFdsOpenCheck
+            hPutStrLn report ("checks " ++ show ([ok1, ok2] ++ fds))
             hFlush report
     closeFd writeFd
     output <- timeout 60000000 $ do
@@ -714,7 +733,7 @@ daemonizePreserveTest = do
     case (output, status) of
         (Nothing, _) -> pure (Fail "timed out waiting for the daemonized child")
         (_, Just (Exited ExitSuccess)) ->
-            expect (output == Just "checks [True,True,True]\n")
+            expect (output == Just "checks [True,True,True,True,True]\n")
                 ("unexpected daemon report: " ++ show output)
         _ -> pure (Fail ("daemonize helper failed: " ++ show status))
 

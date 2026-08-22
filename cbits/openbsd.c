@@ -13,6 +13,7 @@
  * imports in System.OpenBSD.Internal.
  */
 
+#include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -34,14 +35,23 @@ hs_resetproctitle(void)
 
 /*
  * Restrict the process to the empty promise set and exit.  Used by
- * the test suite to verify that pledge("") allows only _exit(2):
- * no Haskell code runs between the pledge call and the exit, so the
- * runtime cannot violate the fresh restriction.
+ * the test suite to verify that pledge("") allows only _exit(2).
+ *
+ * All signals are blocked first: between the pledge call and the
+ * exit, no Haskell code runs, and blocking signals ensures that no
+ * runtime signal handler (for example the threaded runtime's ticker,
+ * which performs stdio-class syscalls) can fire and violate the fresh
+ * restriction.
  */
 void
 hs_pledge_empty_then_exit(void)
 {
+	sigset_t set;
+
+	sigfillset(&set);
+	(void)sigprocmask(SIG_BLOCK, &set, NULL);
+
 	if (pledge("", NULL) == -1)
-		_exit(1);
+		_exit(3);
 	_exit(0);
 }
