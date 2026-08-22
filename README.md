@@ -9,11 +9,15 @@ time on other platforms.
 
 ## What's implemented
 
-| Facility | Module | Restricts |
+| Facility | Module | Restricts/provides |
 | --- | --- | --- |
 | `pledge(2)` | `System.OpenBSD.Pledge` | which system operations the process may perform |
 | `unveil(2)` | `System.OpenBSD.Unveil` | which filesystem paths the process may access |
 | Privilege dropping | `System.OpenBSD.Privileges` | the credentials (UID/GID/groups) of the process |
+| `chroot(2)` | `System.OpenBSD.Chroot` | the filesystem root for pathname resolution |
+| `issetugid(2)`, `getpeereid(3)` | `System.OpenBSD.Credentials` | set-ID execution taint; Unix-domain peer credentials |
+| `setproctitle(3)`, daemonization | `System.OpenBSD.Process` | process titles; background detachment |
+| `arc4random(3)` | `System.OpenBSD.Random` | cryptographically strong random values |
 
 These mechanisms restrict *different dimensions* of process authority
 and are normally complementary: a typical OpenBSD daemon uses all
@@ -247,13 +251,101 @@ serve = pure ()
   must not contain embedded `NUL` bytes; the library rejects them
   explicitly instead of letting C string conversion truncate them.
 
-## Out of scope
+## chroot
 
-This package deliberately stays small.  Adjacent OpenBSD facilities
-that are not exposed (and may be added separately later if justified)
-include `chroot(2)`, `issetugid(2)`, `getpeereid(2)`,
-`setproctitle(3)`, `arc4random(3)`, and daemonization helpers.  The
-`unix` package already covers general POSIX functionality.
+`System.OpenBSD.Chroot` binds `chroot(2)`:
+
+```haskell
+import System.OpenBSD
+
+main :: IO ()
+main = do
+    -- privileged initialization (bind sockets, open logs, ...)
+    enterChroot "/var/empty"
+    -- absolute paths now resolve inside the new root
+```
+
+* `chroot path` is the exact native call: it changes pathname
+  resolution but does not change the working directory.
+* `enterChroot path` performs `chroot(path)` then `chdir("/")` as one
+  masked, fail-closed transition — the recommended security-sensitive
+  form.
+
+`chroot(2)` is not a complete sandbox: it requires root, does not
+replace `pledge`/`unveil`/privilege dropping, cannot confine an
+already-root process reliably, and open descriptors keep access to
+resources outside the new root.  It is not permitted at all once the
+process has called `pledge(2)`, so chroot before pledging.
+
+## Credentials
+
+`System.OpenBSD.Credentials` provides two credential queries:
+
+```haskell
+tainted <- isSetugid        -- issetugid(2)
+(euid, egid) <- getPeerCredentials socket  -- getpeereid(3)
+```
+
+`isSetugid` reports whether the process image was tainted by
+set-ID execution (or by exec while real/effective/saved IDs were
+mismatched).  It is not a UID/GID comparison and is not affected by
+later ID changes.
+
+`getPeerCredentials` returns the effective UID and GID of the peer of
+a connected Unix-domain `SOCK_STREAM`/`SOCK_SEQPACKET` socket.  It
+supplies facts for an authorization decision; it is not
+authentication by itself.  Like `chroot`, it is not covered by any
+pledge promise and must be used before pledging.
+
+## Process titles and daemonization
+
+`System.OpenBSD.Process`:
+
+```haskell
+setProcessTitle "mydaemon: serving"  -- setproctitle(3)
+resetProcessTitle                   -- setproctitle(NULL)
+daemonize                           -- detach, chdir "/", stdio -> /dev/null
+```
+
+Titles are passed to `setproctitle(3)` only as data through a fixed
+`"%s"` format literal in the package's C shim; user-controlled strings
+can never become format strings.  Titles are limited to 2048 bytes and
+work under the `stdio` pledge promise.
+
+`daemonize` deliberately does not call libc `daemon(3)`: that function
+forks and exits the parent with a raw C `_exit(2)` behind the GHC
+runtime, which is unsafe, particularly with the threaded runtime.
+Instead it reproduces the behavior with the runtime-aware
+`forkProcess` and exits the original process cleanly.  `daemonizeWith`
+takes positive `DaemonOptions` (`changeDirectoryToRoot`,
+`redirectStandardStreams`) instead of the inverted
+`nochdir`/`noclose` integers.  Daemonization is explicit and never
+automatic: foreground operation (preferred under modern service
+supervision such as rc.d) is fully supported.
+
+## Random
+
+`System.OpenBSD.Random` binds the `arc4random(3)` family:
+
+```haskell
+value <- arc4Random           -- arc4random()
+bytes <- arc4RandomBytes 32   -- arc4random_buf()
+die   <- arc4RandomUniform 6  -- arc4random_uniform(6)
+```
+
+`arc4RandomUniform` calls the native unbiased function — prefer it
+over `arc4Random \`mod\` n`.  The API name is historical; the
+implementation is ChaCha20-based and re-seeded from `getentropy(2)`.
+It works inside `chroot(2)` and under the `stdio` pledge promise.
+
+## Scope
+
+This package deliberately stays small and OpenBSD-focused: it exposes
+OpenBSD-specific security and process facilities that are not
+available elsewhere.  General POSIX functionality already adequately
+provided by `unix` (forking, file descriptors, users, files, ...)
+remains there and is reused internally rather than rebound.  Unrelated
+OpenBSD APIs remain outside the package's scope.
 
 ## Supported OpenBSD versions
 

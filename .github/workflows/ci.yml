@@ -69,7 +69,7 @@ jobs:
             rm -rf /tmp/sdist-check
             mkdir -p /tmp/sdist-check
             tar -xzf "$SDIST_TAR" -C /tmp/sdist-check
-            cd /tmp/sdist-check/openbsd-2.1.0
+            cd /tmp/sdist-check/openbsd-2.2.0
             cabal build all
             cabal test all --test-show-details=direct
             EOF
@@ -91,7 +91,9 @@ jobs:
             for test_name in \
                 'ok   priv: dropPrivileges fully drops identity (root)' \
                 'ok   priv: Initgroups policy (root)' \
-                'ok   priv: id promise can be removed after dropping (root)'; do
+                'ok   priv: id promise can be removed after dropping (root)' \
+                'ok   chroot: enterChroot confines the process (root)' \
+                'ok   cred: set-ID exec taints the process (root)'; do
                 if ! grep -qF "$test_name" /tmp/openbsd-privileged.log; then
                     echo "ERROR: privileged test did not pass: $test_name" >&2
                     exit 1

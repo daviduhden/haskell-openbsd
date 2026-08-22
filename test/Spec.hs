@@ -5,34 +5,75 @@
 -- Module      : Main
 -- Description : Test suite for the openbsd package
 --
--- Pure tests (promise\/permission serialization, NUL rejection) run
--- everywhere.  Runtime tests exercise the real kernel interfaces and
--- must run on OpenBSD; tests that require root are skipped cleanly
--- otherwise.
+-- Pure tests (serialization, NUL rejection) run everywhere.  Runtime
+-- tests exercise the real kernel interfaces and must run on OpenBSD;
+-- tests that require root are skipped cleanly otherwise.
 --
 -- All runtime tests run in forked child processes so that the test
--- runner itself never loses privileges or has its authority
--- restricted, and so that no test depends on the execution order of
--- any other test.
+-- runner itself never loses privileges, changes its filesystem root,
+-- or has its authority restricted, and so that no test depends on the
+-- execution order of any other test.  The suite is built with
+-- @-threaded@ so that daemonization and fork behavior are exercised
+-- against the threaded runtime.
 module Main (main) where
 
-import Control.Exception (IOException, SomeException, displayException, try)
-import Control.Monad (unless, void, when)
-import Data.List (nub)
+import Control.Exception (IOException, SomeException, displayException,
+                             evaluate, try)
+import Control.Monad (forM_, unless, void, when)
+import Data.List (isInfixOf, nub)
 import Foreign.C.Types (CInt(..))
+import System.Directory (copyFile, createDirectoryIfMissing,
+                         doesDirectoryExist, doesFileExist,
+                         getCurrentDirectory, removeDirectory, removeFile)
+import System.Environment (getArgs)
 import System.Exit (ExitCode(..), exitWith)
-import System.IO (BufferMode(..), hPutStrLn, hSetBuffering, stderr, stdout)
+import System.IO (BufferMode(..), IOMode(..), hClose, hFlush, hGetContents,
+                  hGetLine, hPutChar, hPutStr, hPutStrLn, hSetBuffering,
+                  hSetBinaryMode, hWaitForInput, openFile, stderr, stdin,
+                  stdout)
 import System.IO.Error (isDoesNotExistError, isPermissionError, isUserError)
-import System.Posix.Process (ProcessStatus(..), exitImmediately, forkProcess,
-                             getProcessID, getProcessStatus)
+import System.Posix.Files (groupExecuteMode, groupReadMode,
+                           otherExecuteMode, otherReadMode, ownerExecuteMode,
+                           ownerReadMode, ownerWriteMode, setFileMode,
+                           setOwnerAndGroup, setUserIDMode, unionFileModes)
+import System.Posix.Directory (changeWorkingDirectory)
+import System.Posix.IO (closeFd, createPipe, dupTo, fdToHandle, handleToFd,
+                        stdError, stdInput, stdOutput)
+import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
+                             forkProcess, getProcessGroupID, getProcessID,
+                             getProcessStatus)
 import System.Posix.Signals (sigABRT)
-import System.Posix.User (getEffectiveUserID, getGroups, getUserEntryForName,
-                          userGroupID, userID)
+import System.Posix.Types (Fd(..), FileMode)
+import System.Posix.User (getEffectiveGroupID, getEffectiveUserID, getGroups,
+                          getUserEntryForName, userGroupID, userID)
+import System.Timeout (timeout)
+import Foreign.C.Error (throwErrno)
+import Foreign.Marshal.Array (allocaArray)
+import Foreign.Ptr (Ptr)
+import Foreign.Storable (peekElemOff)
+import qualified Data.ByteString as BS
 
 import System.OpenBSD
 
 foreign import ccall unsafe "unistd.h _exit"
     c__exit :: CInt -> IO ()
+
+-- AF_UNIX and SOCK_STREAM are pinned at 1 by the OpenBSD ABI
+-- (see socket(2)); the test suite binds socketpair(2) itself rather
+-- than depending on the socket API of the installed unix package,
+-- which changed across unix releases.
+foreign import ccall unsafe "sys/socket.h socketpair"
+    c_socketpair :: CInt -> CInt -> CInt -> Ptr CInt -> IO CInt
+
+afUnix, sockStream :: CInt
+afUnix = 1
+sockStream = 1
+
+socketPair :: IO (Fd, Fd)
+socketPair = allocaArray 2 $ \sockets -> do
+    result <- c_socketpair afUnix sockStream 0 sockets
+    when (result /= 0) (throwErrno "socketpair")
+    (,) <$> (Fd <$> peekElemOff sockets 0) <*> (Fd <$> peekElemOff sockets 1)
 
 data Result = Pass | Skip String | Fail String
 
@@ -78,7 +119,7 @@ inChild label action = do
                 case logged of
                     Right () -> pure ()
                     Left (_ :: SomeException) ->
-                        hPutStrLn stderr ("child failure: " ++ displayException e)
+                        hFlush stdout
                 exitImmediately (ExitFailure 1)
             Right () -> exitImmediately ExitSuccess
     status <- getProcessStatus True False child
@@ -115,6 +156,31 @@ expectSignal expected action = do
             pure (Fail ("child failed with exit code " ++ show code))
         _ -> pure (Fail "child vanished")
 
+-- | Fork a child that execs @prog@ with @args@, capturing its stdout.
+captureOutput :: FilePath -> [String] -> IO (Either String String)
+captureOutput prog args = do
+    (readFd, writeFd) <- createPipe
+    child <- forkProcess $ do
+        closeFd readFd
+        dupTo writeFd stdOutput
+        closeFd writeFd
+        executeFile prog True args Nothing
+        exitImmediately (ExitFailure 127)
+    closeFd writeFd
+    output <- timeout 60000000 $ do
+        h <- fdToHandle readFd
+        hSetBinaryMode h True
+        s <- hGetContents h
+        _ <- evaluate (length s)
+        pure s
+    status <- getProcessStatus True False child
+    closeFd readFd
+    case output of
+        Nothing -> pure (Left "timed out reading child output")
+        Just out -> case status of
+            Just (Exited ExitSuccess) -> pure (Right out)
+            _ -> pure (Left ("child failed: " ++ show status ++ ", output: " ++ out))
+
 -- | Skip a test unless the current process is root.
 requireRoot :: IO Result -> IO Result
 requireRoot action = do
@@ -123,6 +189,13 @@ requireRoot action = do
     if euid == userID rootEntry
         then action
         else pure (Skip "requires root privileges")
+
+getProgPath :: IO FilePath
+getProgPath = do
+    args <- getArgs
+    case args of
+        (prog : _) -> pure prog
+        [] -> fail "no argv[0] available"
 
 -- Pure tests
 
@@ -159,6 +232,14 @@ nulRejectionTests =
       , expectIOError "dropPrivileges NUL" (dropPrivileges "nobody\0root") )
     , ( "priv: rejects embedded NUL bytes in initGroups"
       , expectIOError "initGroups NUL" (initGroups "nobody\0root" 0) )
+    , ( "chroot: rejects embedded NUL bytes in paths"
+      , expectIOError "chroot NUL" (chroot "/tmp\0etc") )
+    , ( "chroot: enterChroot rejects embedded NUL bytes"
+      , expectIOError "enterChroot NUL" (enterChroot "/tmp\0etc") )
+    , ( "proc: rejects embedded NUL bytes in process titles"
+      , expectIOError "setProcessTitle NUL" (setProcessTitle "a\0b") )
+    , ( "random: rejects negative buffer lengths"
+      , expectIOError "arc4RandomBytes negative" (arc4RandomBytes (-1)) )
     ]
 
 -- pledge tests
@@ -357,6 +438,289 @@ pledgeIdLifecycleTest = requireRoot $ inChild "pledge-id-lifecycle" $ do
     when (rUid /= (uid, uid, uid)) $
         fail ("identity is wrong after drop: " ++ show rUid)
 
+-- chroot tests
+
+-- | Deterministic in both the privileged and unprivileged phases: the
+-- child makes itself unprivileged first if necessary, then chroot
+-- must fail with EPERM.
+chrootEpermTest :: IO Result
+chrootEpermTest = inChild "chroot-eperm" $ do
+    account <- accountByName "nobody"
+    let uid = accountUid account
+    _ <- try (setResUserID uid uid uid) :: IO (Either IOException ())
+    result <- try (chroot "/")
+    case result of
+        Left e | isPermissionError e -> pure ()
+        Left e -> fail ("expected EPERM, got " ++ displayException e)
+        Right () -> fail "chroot succeeded without privileges"
+
+enterChrootTest :: IO Result
+enterChrootTest = requireRoot $ do
+    let rootDir = "/tmp/openbsd-enterchroot-test"
+    createDirectoryIfMissing True rootDir
+    writeFile (rootDir ++ "/marker") "inside"
+    result <- inChild "enterchroot" $ do
+        enterChroot rootDir
+        cwd <- getCurrentDirectory
+        when (cwd /= "/") (fail ("cwd is " ++ show cwd ++ ", expected /"))
+        visible <- doesFileExist "/marker"
+        when (not visible) (fail "marker not visible inside the new root")
+        outside <- doesDirectoryExist "/etc"
+        when outside (fail "/etc visible inside the new root")
+        changeWorkingDirectory ".."
+        cwd2 <- getCurrentDirectory
+        when (cwd2 /= "/") (fail "escaped the new root via '..'")
+    removeFile (rootDir ++ "/marker")
+    removeDirectory rootDir
+    pure result
+
+-- credential tests
+
+issetugidPlainTest :: IO Result
+issetugidPlainTest = inChild "issetugid-false" $ do
+    tainted <- isSetugid
+    when tainted (fail "untainted process reports issetugid")
+
+-- | A plain exec of a non-set-ID binary must leave the process
+-- untainted.
+issetugidPlainExecTest :: IO Result
+issetugidPlainExecTest = do
+    prog <- getProgPath
+    let probe = "/tmp/openbsd-issetugid-plain-probe"
+    copyFile prog probe
+    output <- captureOutput probe ["--issetugid-probe"]
+    removeFile probe
+    case output of
+        Left e -> pure (Fail ("probe failed: " ++ e))
+        Right s -> expect (s == "0\n")
+            ("plain exec reported taint, got: " ++ show s)
+
+-- | A set-ID exec must taint the process: the kernel sets the flag
+-- whenever the executed file carries the set-ID bits.
+issetugidSuidExecTest :: IO Result
+issetugidSuidExecTest = requireRoot $ do
+    prog <- getProgPath
+    let probe = "/tmp/openbsd-issetugid-suid-probe"
+    copyFile prog probe
+    rootEntry <- getUserEntryForName "root"
+    let suidMode :: FileMode
+        suidMode = foldl1 unionFileModes
+            [ ownerReadMode, ownerWriteMode, ownerExecuteMode
+            , groupReadMode, groupExecuteMode
+            , otherReadMode, otherExecuteMode
+            , setUserIDMode ]
+    setOwnerAndGroup probe (userID rootEntry) (userGroupID rootEntry)
+    setFileMode probe suidMode
+    output <- captureOutput probe ["--issetugid-probe"]
+    removeFile probe
+    case output of
+        Left e -> pure (Fail ("probe failed: " ++ e))
+        Right s -> expect (s == "1\n")
+            ("set-ID exec not detected, got: " ++ show s)
+
+getpeereidTest :: IO Result
+getpeereidTest = inChild "getpeereid" $ do
+    (a, b) <- socketPair
+    (uid, gid) <- getPeerCredentials a
+    euid <- getEffectiveUserID
+    egid <- getEffectiveGroupID
+    closeFd a
+    closeFd b
+    when (uid /= euid || gid /= egid) $
+        fail ("peer credentials mismatch: " ++ show (uid, gid)
+            ++ " vs " ++ show (euid, egid))
+
+getpeereidBadFdTest :: IO Result
+getpeereidBadFdTest = inChild "getpeereid-badfd" $ do
+    result <- try (getPeerCredentials (Fd 99999))
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right _ -> fail "getpeereid succeeded on an invalid descriptor"
+
+getpeereidNotSockTest :: IO Result
+getpeereidNotSockTest = inChild "getpeereid-notsock" $ do
+    nullHandle <- openFile "/dev/null" ReadMode
+    fd <- handleToFd nullHandle
+    result <- try (getPeerCredentials fd)
+    closeFd fd
+    hClose nullHandle
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right _ -> fail "getpeereid succeeded on a regular file"
+
+-- process-title tests
+
+setproctitleObservableTest :: IO Result
+setproctitleObservableTest = do
+    (controlRead, controlWrite) <- createPipe
+    (outputRead, outputWrite) <- createPipe
+    let marker = "obd-title-%s-%n-%x"
+    child <- forkProcess $ do
+        closeFd controlWrite
+        closeFd outputRead
+        dupTo controlRead stdInput
+        dupTo outputWrite stdOutput
+        hSetBuffering stdout LineBuffering
+        setProcessTitle marker
+        putStrLn "ready"
+        hFlush stdout
+        _ <- getChar
+        resetProcessTitle
+        putStrLn "ready"
+        hFlush stdout
+        _ <- getChar
+        exitImmediately ExitSuccess
+    closeFd controlRead
+    closeFd outputWrite
+    outHandle <- fdToHandle outputRead
+    controlHandle <- fdToHandle controlWrite
+    hSetBuffering controlHandle LineBuffering
+    first <- timeout 60000000 (hGetLine outHandle)
+    case first of
+        Nothing -> pure (Fail "child did not signal readiness")
+        Just "ready" -> do
+            withTitle <- captureOutput "/bin/ps" ["-ww", "-p", show child, "-o", "command"]
+            hPutChar controlHandle 'x'
+            hFlush controlHandle
+            second <- timeout 60000000 (hGetLine outHandle)
+            case second of
+                Nothing -> pure (Fail "child did not signal reset")
+                Just "ready" -> do
+                    resetTitle <- captureOutput "/bin/ps" ["-ww", "-p", show child, "-o", "command"]
+                    hPutChar controlHandle 'x'
+                    hFlush controlHandle
+                    _ <- getProcessStatus True False child
+                    closeFd outputRead
+                    closeFd controlWrite
+                    pure $ case withTitle of
+                        Left e -> Fail e
+                        Right out
+                            | not (marker `isInfixOf` out) ->
+                                Fail ("ps did not show the title: " ++ show out)
+                            | otherwise -> case resetTitle of
+                                Left e -> Fail e
+                                Right out2
+                                    | marker `isInfixOf` out2 ->
+                                        Fail ("title not reset: " ++ show out2)
+                                    | otherwise -> Pass
+                Just other -> pure (Fail ("unexpected child signal: " ++ show other))
+        Just other -> pure (Fail ("unexpected child signal: " ++ show other))
+
+-- random tests
+
+arc4randomTest :: IO Result
+arc4randomTest = inChild "arc4random" $ do
+    b0 <- arc4RandomBytes 0
+    when (BS.length b0 /= 0) (fail "zero-length request returned data")
+    b1 <- arc4RandomBytes 1
+    when (BS.length b1 /= 1) (fail "one-byte request returned wrong length")
+    b4096 <- arc4RandomBytes 4096
+    when (BS.length b4096 /= 4096) (fail "4096-byte request returned wrong length")
+    _ <- arc4Random
+    pure ()
+
+arc4randomUniformTest :: IO Result
+arc4randomUniformTest = inChild "arc4random-uniform" $ do
+    zero <- arc4RandomUniform 0
+    when (zero /= 0) (fail "arc4random_uniform(0) returned a nonzero value")
+    one <- arc4RandomUniform 1
+    when (one /= 0) (fail "arc4random_uniform(1) returned a nonzero value")
+    forM_ [1 .. 50 :: Int] $ \_ -> do
+        value <- arc4RandomUniform 1000
+        when (value >= 1000) (fail "uniform result out of bounds")
+
+-- | The arc4random family must work under pledge stdio: it only
+-- requires getentropy(2), which is part of the stdio promise.
+arc4randomPledgeTest :: IO Result
+arc4randomPledgeTest = inChild "arc4random-pledge" $ do
+    pledge [Stdio]
+    _ <- arc4Random
+    buf <- arc4RandomBytes 64
+    when (BS.length buf /= 64) (fail "wrong buffer length under pledge")
+    _ <- arc4RandomUniform 10
+    pure ()
+
+-- daemonization tests
+
+sessionCheck :: IO Bool
+sessionCheck = (==) <$> getProcessGroupID <*> getProcessID
+
+cwdCheck :: FilePath -> IO Bool
+cwdCheck expected = (== expected) <$> getCurrentDirectory
+
+-- | Standard descriptors are considered usable when the std Handles
+-- still operate: stdin answers without blocking, and stdout\/stderr
+-- accept writes.  This avoids version-churny fd-option queries and
+-- verifies actual usability rather than mere openness.
+stdFdsOpenCheck :: IO Bool
+stdFdsOpenCheck = do
+    rIn <- try (hWaitForInput stdin 0 >> pure ()) :: IO (Either IOException ())
+    rOut <- try (hPutStr stdout "" >> hFlush stdout) :: IO (Either IOException ())
+    rErr <- try (hPutStr stderr "" >> hFlush stderr) :: IO (Either IOException ())
+    pure (all (either (const False) (const True)) [rIn, rOut, rErr])
+
+-- | The daemonized child reports via an inherited pipe; the original
+-- process exits inside 'daemonize', exactly like daemon(3).
+daemonizeTest :: IO Result
+daemonizeTest = do
+    (readFd, writeFd) <- createPipe
+    helper <- forkProcess $ do
+        closeFd readFd
+        report <- fdToHandle writeFd
+        hSetBuffering report LineBuffering
+        daemonize
+        ok1 <- sessionCheck
+        ok2 <- cwdCheck "/"
+        ok3 <- stdFdsOpenCheck
+        hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
+        hFlush report
+        exitImmediately ExitSuccess
+    closeFd writeFd
+    output <- timeout 60000000 $ do
+        h <- fdToHandle readFd
+        s <- hGetContents h
+        _ <- evaluate (length s)
+        pure s
+    status <- getProcessStatus True False helper
+    case (output, status) of
+        (Nothing, _) -> pure (Fail "timed out waiting for the daemonized child")
+        (_, Just (Exited ExitSuccess)) ->
+            expect (output == Just "checks [True,True,True]\n")
+                ("unexpected daemon report: " ++ show output)
+        _ -> pure (Fail ("daemonize helper failed: " ++ show status))
+
+daemonizePreserveTest :: IO Result
+daemonizePreserveTest = do
+    originalCwd <- getCurrentDirectory
+    (readFd, writeFd) <- createPipe
+    helper <- forkProcess $ do
+        closeFd readFd
+        report <- fdToHandle writeFd
+        hSetBuffering report LineBuffering
+        daemonizeWith defaultDaemonOptions
+            { changeDirectoryToRoot = False
+            , redirectStandardStreams = False
+            }
+        ok1 <- sessionCheck
+        ok2 <- cwdCheck originalCwd
+        ok3 <- stdFdsOpenCheck
+        hPutStrLn report ("checks " ++ show [ok1, ok2, ok3])
+        hFlush report
+        exitImmediately ExitSuccess
+    closeFd writeFd
+    output <- timeout 60000000 $ do
+        h <- fdToHandle readFd
+        s <- hGetContents h
+        _ <- evaluate (length s)
+        pure s
+    status <- getProcessStatus True False helper
+    case (output, status) of
+        (Nothing, _) -> pure (Fail "timed out waiting for the daemonized child")
+        (_, Just (Exited ExitSuccess)) ->
+            expect (output == Just "checks [True,True,True]\n")
+                ("unexpected daemon report: " ++ show output)
+        _ -> pure (Fail ("daemonize helper failed: " ++ show status))
+
 pureTests :: [(String, IO Result)]
 pureTests =
     [ ("pledge: serializes every promise", promiseNamesTest)
@@ -381,6 +745,20 @@ runtimeTests =
     , ("priv: unknown user is reported", dropUnknownUserTest)
     , ("priv: dropPrivileges fails with EPERM without privileges", dropUnprivilegedTest)
     , ("priv: id promise can be removed after dropping (root)", pledgeIdLifecycleTest)
+    , ("chroot: chroot fails with EPERM without privileges", chrootEpermTest)
+    , ("chroot: enterChroot confines the process (root)", enterChrootTest)
+    , ("cred: plain fork is not set-ID tainted", issetugidPlainTest)
+    , ("cred: plain exec is not set-ID tainted", issetugidPlainExecTest)
+    , ("cred: set-ID exec taints the process (root)", issetugidSuidExecTest)
+    , ("cred: getpeereid returns peer credentials", getpeereidTest)
+    , ("cred: getpeereid fails on an invalid descriptor", getpeereidBadFdTest)
+    , ("cred: getpeereid fails on a regular file", getpeereidNotSockTest)
+    , ("proc: setproctitle is observable via ps(1)", setproctitleObservableTest)
+    , ("random: arc4random buffer lengths", arc4randomTest)
+    , ("random: arc4random_uniform stays in bounds", arc4randomUniformTest)
+    , ("random: arc4random works under pledge stdio", arc4randomPledgeTest)
+    , ("proc: daemonize detaches the process", daemonizeTest)
+    , ("proc: daemonize can preserve cwd and streams", daemonizePreserveTest)
     ]
 
 tests :: [(String, IO Result)]
@@ -389,11 +767,19 @@ tests = pureTests ++ runtimeTests
 main :: IO ()
 main = do
     hSetBuffering stdout LineBuffering
+    args <- getArgs
+    case args of
+        "--issetugid-probe" : _ -> do
+            tainted <- isSetugid
+            putStrLn (if tainted then "1" else "0")
+            hFlush stdout
+            exitWith ExitSuccess
+        _ -> do
 #if defined(openbsd_HOST_OS)
-    ok <- runTests tests
+            ok <- runTests tests
 #else
-    putStrLn ("Not running on OpenBSD: running " ++ show (length pureTests)
-        ++ " of " ++ show (length tests) ++ " tests (runtime tests skipped).")
-    ok <- runTests pureTests
+            putStrLn ("Not running on OpenBSD: running " ++ show (length pureTests)
+                ++ " of " ++ show (length tests) ++ " tests (runtime tests skipped).")
+            ok <- runTests pureTests
 #endif
-    unless ok (exitWith (ExitFailure 1))
+            unless ok (exitWith (ExitFailure 1))
