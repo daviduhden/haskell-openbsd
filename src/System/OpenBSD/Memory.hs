@@ -40,11 +40,12 @@ import System.OpenBSD.Internal (c_explicit_bzero, c_freezero, c_mimmutable,
 -- | Permanently forbid future changes to the protection or mapping
 -- of the given byte buffer, as @mimmutable(2)@.
 --
--- The buffer's memory is marked immutable: subsequent @mprotect(2)@,
--- @munmap(2)@, @madvise(2)@, @msync(2)@, @mmap(2)@ and
--- @minherit(2)@ operations on it fail with @EPERM@.  Reads and
--- writes to the memory itself remain allowed; the mechanism protects
--- the /mapping/, not the contents.  The change is permanent.
+-- The buffer's memory is marked immutable: most subsequent
+-- @mprotect(2)@, @munmap(2)@, @madvise(2)@, @msync(2)@, @mmap(2)@
+-- and @minherit(2)@ operations on it fail with @EPERM@ (unmapping is
+-- the core guarantee).  Reads and writes to the memory itself remain
+-- allowed; the mechanism protects the /mapping/, not the contents.
+-- The change is permanent.
 --
 -- Allowed under the @stdio@ pledge promise.  An invalid range fails
 -- with the native @EINVAL@.
