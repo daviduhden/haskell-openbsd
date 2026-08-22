@@ -17,7 +17,11 @@ time on other platforms.
 | `chroot(2)` | `System.OpenBSD.Chroot` | the filesystem root for pathname resolution |
 | `issetugid(2)`, `getpeereid(3)` | `System.OpenBSD.Credentials` | set-ID execution taint; Unix-domain peer credentials |
 | `setproctitle(3)`, daemonization | `System.OpenBSD.Process` | process titles; background detachment |
-| `arc4random(3)` | `System.OpenBSD.Random` | cryptographically strong random values |
+| `arc4random(3)`, `getentropy(2)` | `System.OpenBSD.Random` | cryptographically strong random values; kernel entropy |
+| `getrtable(2)`/`setrtable(2)` | `System.OpenBSD.Rtable` | routing domains |
+| `mimmutable(2)`, `explicit_bzero(3)`, `freezero(3)`, `timingsafe_bcmp(3)`, `timingsafe_memcmp(3)` | `System.OpenBSD.Memory` | memory protection, secure erasure, constant-time comparison |
+| `crypt_checkpass(3)`, `crypt_newhash(3)`, `bcrypt_pbkdf(3)` | `System.OpenBSD.Authentication` | password hashing and key derivation |
+| `closefrom(2)`, `getdtablecount(2)`, `setprogname(3)` | `System.OpenBSD.Process` | descriptor hygiene; program name |
 
 These mechanisms restrict *different dimensions* of process authority
 and are normally complementary: a typical OpenBSD daemon uses all
@@ -70,6 +74,59 @@ case execution is blocked with `EACCES`.
 
 `pledge`, `pledgeChild` and `pledgeBoth` are conveniences over
 `pledgeParts`.
+
+### Forking and pledge
+
+`forkProcess` copies only the forking thread into the child and is not
+well supported with multiple capabilities (`+RTS -N`), although
+`-threaded` with one capability is supported (see the `unix`
+documentation).  A `forkProcess` child should therefore be followed by
+`exec` as directly as possible, and pledge policy for executed
+children should be configured in the parent:
+
+```haskell
+pledgeChild [Stdio]            -- exec ceiling, set in the parent
+
+pid <- forkProcess $
+    executeFile "/path/to/child" False [] Nothing
+```
+
+OpenBSD preserves execpromises across `fork(2)` and applies them when
+the descendant executes a new image, so the child needs no pledge
+call at all in the post-fork window.  `System.OpenBSD.Process`
+provides ready-made helpers with pre-fork validation of every string:
+
+```haskell
+pid <- forkExec        "/path/to/child" False [] Nothing
+pid <- forkExecPledged [Stdio] "/path/to/child" False [] Nothing
+```
+
+`execPledged` replaces the current image under an exec promise
+ceiling instead of forking.
+
+```text
+parent
+    -> pledgeChild childPromises
+    -> forkProcess
+    -> executeFile immediately
+    -> the new image starts under childPromises
+```
+
+Do not apply major current-process pledge reductions from arbitrary
+Haskell code in the post-fork/pre-exec child: reducing the current
+promise set to an extreme restriction makes the kernel unwind sibling
+runtime threads while cleaning up unveil state, and the resumed
+runtime threads then perform syscalls forbidden by the fresh
+restriction, so the kernel aborts the process.  In particular
+`pledge []` — the `_exit(2)`-only state — is a valid OpenBSD
+operation whose native semantics are verified by a standalone C probe,
+but it cannot be used from a live threaded Haskell child.
+
+Setting execpromises in the parent is monotonic and affects every
+future exec from that process and its descendants: use it when those
+descendants share a common promise ceiling.  Independent per-child
+policies require a fresh-process boundary (for example a minimal
+native launcher), which this package does not provide.
 
 ### Notes
 
@@ -342,12 +399,49 @@ It works inside `chroot(2)` and under the `stdio` pledge promise.
 
 ## Scope
 
-This package deliberately stays small and OpenBSD-focused: it exposes
-OpenBSD-specific security and process facilities that are not
-available elsewhere.  General POSIX functionality already adequately
-provided by `unix` (forking, file descriptors, users, files, ...)
-remains there and is reused internally rather than rebound.  Unrelated
-OpenBSD APIs remain outside the package's scope.
+`haskell-openbsd` provides Haskell interfaces to useful OpenBSD-specific
+system and library facilities that are not adequately covered by the
+standard Haskell POSIX ecosystem.  General POSIX functionality remains
+the responsibility of packages such as `unix` and is reused rather
+than rebound.  See the coverage table below for the audited API
+surface and the precise reasons behind deferred facilities.
+
+## API coverage
+
+| OpenBSD facility | Haskell module | Status |
+| --- | --- | --- |
+| `pledge(2)` | `System.OpenBSD.Pledge` | supported (typed promises, NULL/empty distinction, execpromises) |
+| `unveil(2)` | `System.OpenBSD.Unveil` | supported (rules, locking, empty permissions) |
+| privilege dropping | `System.OpenBSD.Privileges` | supported (daemon sequence, verification, masking) |
+| `chroot(2)` | `System.OpenBSD.Chroot` | supported (`chroot`, masked `enterChroot`) |
+| `issetugid(2)`, `getpeereid(3)` | `System.OpenBSD.Credentials` | supported |
+| `setproctitle(3)`, `getprogname(3)`/`setprogname(3)` | `System.OpenBSD.Process` | supported (format-safe) |
+| `daemon(3)` | `System.OpenBSD.Process` | supported (runtime-safe `daemonize`) |
+| fork/exec + execpromises | `System.OpenBSD.Process` | supported (`forkExec`, `forkExecPledged`, `execPledged`) |
+| `closefrom(2)`, `getdtablecount(2)` | `System.OpenBSD.Process` | supported |
+| `arc4random(3)` family | `System.OpenBSD.Random` | supported |
+| `getentropy(2)` | `System.OpenBSD.Random` | supported (low-level, native 256-byte limit) |
+| `getrtable(2)`/`setrtable(2)` | `System.OpenBSD.Rtable` | supported |
+| `mimmutable(2)` | `System.OpenBSD.Memory` | supported |
+| `explicit_bzero(3)`, `freezero(3)` | `System.OpenBSD.Memory` | supported (explicit native memory only) |
+| `timingsafe_bcmp(3)`, `timingsafe_memcmp(3)` | `System.OpenBSD.Memory` | supported |
+| `crypt_checkpass(3)`, `crypt_newhash(3)` | `System.OpenBSD.Authentication` | supported |
+| `bcrypt_pbkdf(3)` | `System.OpenBSD.Authentication` | supported |
+| `imsg(3)`/`ibuf(3)` | — | deferred: substantial IPC abstraction with descriptor-passing ownership; cannot be runtime-validated before shipping; `unix` `sendmsg`/`recvmsg` with `SCM_RIGHTS` covers the primitive mechanism |
+| `kqueue(2)`/`kevent(2)` | — | deferred: general event facility with existing ecosystem packages; not OpenBSD-security-specific |
+| `setusercontext(3)`/`login_cap(3)` | — | deferred: login-session policy framework; the daemon privilege-drop sequence remains the supported policy |
+| `pidfile(3)` | — | deferred: the only public OpenBSD API is atexit-based with `/var/run`-only naming, weaker than a few lines of explicit `unix` code |
+| `posix_spawn(3)` | — | deferred: no demonstrated need over the validated fork/exec architecture; a binding would need a file-actions abstraction for no gain |
+| `sysctl(2)` | — | deferred: broad surface better handled per use case |
+| `fsync_range(2)`, `revoke(2)` | — | deferred: niche facilities with little demand from daemons |
+| `getpwnam_shadow(3)` | — | deferred: verification via `cryptCheckpass` covers authentication; direct shadow reads are niche |
+| `readpassphrase(3)` | — | deferred: interactive tty handling, marginal for daemons |
+| `reallocarray(3)`/`recallocarray(3)`, `strlcpy(3)`/`strlcat(3)`, `strtonum(3)`, `fmt_scaled(3)`, `fparseln(3)`, `ohash(3)`, `getbsize(3)`, `opendev(3)` | — | not useful from Haskell: C allocation/parsing helpers with existing Haskell equivalents |
+| `pinsyscalls(2)`, `kbind(2)`, `__tfork(2)`, `__thrsleep(2)`, `futex(2)`, `__get_tcb(2)`, `__pledge_open(2)`, `utrace(2)`, `syscall(2)` | — | internal kernel/libc interfaces, not application APIs |
+| `skey(3)` | — | obsolete |
+
+Facilities above are audited against OpenBSD 7.9 (stable target) and
+OpenBSD-current.
 
 ## Supported OpenBSD versions
 

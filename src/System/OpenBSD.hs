@@ -22,7 +22,16 @@
 -- * 'System.OpenBSD.Process': safe @setproctitle(3)@ and
 --   daemonization.
 --
--- * 'System.OpenBSD.Random': the @arc4random(3)@ family.
+-- * 'System.OpenBSD.Random': the @arc4random(3)@ family and
+--   @getentropy(2)@.
+--
+-- * 'System.OpenBSD.Rtable': OpenBSD routing domains.
+--
+-- * 'System.OpenBSD.Memory': @mimmutable(2)@, secure erasure and
+--   constant-time comparison.
+--
+-- * 'System.OpenBSD.Authentication': password hashing and key
+--   derivation.
 --
 -- These mechanisms restrict different dimensions of process authority
 -- (system calls, filesystem access, and credentials respectively) and
@@ -70,6 +79,9 @@ module System.OpenBSD
     , module System.OpenBSD.Credentials
     , module System.OpenBSD.Process
     , module System.OpenBSD.Random
+    , module System.OpenBSD.Rtable
+    , module System.OpenBSD.Memory
+    , module System.OpenBSD.Authentication
     ) where
 
 import System.OpenBSD.Pledge
@@ -79,3 +91,6 @@ import System.OpenBSD.Chroot
 import System.OpenBSD.Credentials
 import System.OpenBSD.Process
 import System.OpenBSD.Random
+import System.OpenBSD.Rtable
+import System.OpenBSD.Memory
+import System.OpenBSD.Authentication

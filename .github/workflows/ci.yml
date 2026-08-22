@@ -69,7 +69,7 @@ jobs:
             rm -rf /tmp/sdist-check
             mkdir -p /tmp/sdist-check
             tar -xzf "$SDIST_TAR" -C /tmp/sdist-check
-            cd /tmp/sdist-check/openbsd-2.2.0
+            cd /tmp/sdist-check/openbsd-2.4.0
             cabal build all
             cabal test all --test-show-details=direct
             EOF
