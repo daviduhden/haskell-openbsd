@@ -23,7 +23,7 @@ import Control.Exception (IOException, SomeException, displayException,
 import Control.Monad (forM, forM_, unless, void, when)
 import Data.List (isInfixOf, nub)
 import Data.Word (Word8)
-import Foreign.C.Types (CInt(..))
+import Foreign.C.Types (CInt(..), CSize(..))
 import System.Directory (createDirectoryIfMissing,
                          doesDirectoryExist, doesFileExist,
                          getCurrentDirectory, removeDirectory, removeFile)
@@ -43,7 +43,7 @@ import System.Posix.IO (closeFd, createPipe, dup, dupTo, fdToHandle,
 import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
                              forkProcess, getProcessGroupID, getProcessID,
                              getProcessStatus)
-import System.Posix.Signals (sigABRT, sigSEGV)
+import System.Posix.Signals (sigABRT)
 import System.Posix.Types (Fd(..), FileMode)
 import System.Posix.User (getEffectiveGroupID, getEffectiveUserID, getGroups,
                           getUserEntryForName, userGroupID, userID)
@@ -67,6 +67,13 @@ foreign import ccall unsafe "unistd.h _exit"
 -- which changed across unix releases.
 foreign import ccall unsafe "sys/socket.h socketpair"
     c_socketpair :: CInt -> CInt -> CInt -> Ptr CInt -> IO CInt
+
+-- PROT_READ | PROT_WRITE, the POSIX values for the mimmutable test.
+foreign import ccall unsafe "sys/mman.h mprotect"
+    c_mprotect :: Ptr () -> CSize -> CInt -> IO CInt
+
+protReadWrite :: CInt
+protReadWrite = 3
 
 afUnix, sockStream :: CInt
 afUnix = 1
@@ -325,9 +332,18 @@ pledgeEmptyTest = do
         Right _ -> pure Pass
 
 compileFixture :: FilePath -> FilePath -> IO ()
-compileFixture source output = do
+compileFixture = compileFixtureWith []
+
+-- | The execpledge target must be static: a dynamically linked
+-- executable needs rpath at startup for ld.so, which the stdio exec
+-- ceiling forbids.
+compileStaticFixture :: FilePath -> FilePath -> IO ()
+compileStaticFixture = compileFixtureWith ["-static"]
+
+compileFixtureWith :: [String] -> FilePath -> FilePath -> IO ()
+compileFixtureWith flags source output = do
     result <- captureOutput "/usr/bin/cc"
-        ["-Wall", "-Wextra", "-Werror", "-o", output, source]
+        (["-Wall", "-Wextra", "-Werror"] ++ flags ++ ["-o", output, source])
     case result of
         Left e -> fail ("cc failed for " ++ source ++ ": " ++ e)
         Right _ -> pure ()
@@ -374,16 +390,16 @@ forkExecPledgeTest :: IO Result
 forkExecPledgeTest = inChild "fork-exec" $ do
     let source = "test/fixtures/execpledge-probe.c"
         probe = "/tmp/openbsd-execpledge-probe"
-    compileFixture source probe
+    compileStaticFixture source probe
 
     -- Configure the exec ceiling in the parent, before any fork.
     pledgeChild [Stdio]
 
     -- Exec promises do not restrict the current process: an
     -- operation outside the child's future promise set still works.
-    hostnameHandle <- openFile "/etc/hostname" ReadMode
-    _ <- evaluate (length <$> hGetContents hostnameHandle)
-    hClose hostnameHandle
+    nullHandle <- openFile "/dev/null" ReadMode
+    _ <- evaluate (length <$> hGetContents nullHandle)
+    hClose nullHandle
 
     (allowedStatus, allowedOut) <- execCapture probe []
     when (allowedOut /= "execpledge-ok\n") $
@@ -794,7 +810,7 @@ forkExecTest :: IO Result
 forkExecTest = inChild "fork-exec-plain" $ do
     let source = "test/fixtures/execpledge-probe.c"
         probe = "/tmp/openbsd-execpledge-probe"
-    compileFixture source probe
+    compileStaticFixture source probe
     pid <- forkExec probe False [] Nothing
     status <- getProcessStatus True False pid
     removeFile probe
@@ -809,7 +825,7 @@ forkExecPledgedTest :: IO Result
 forkExecPledgedTest = inChild "fork-exec-pledged" $ do
     let source = "test/fixtures/execpledge-probe.c"
         probe = "/tmp/openbsd-execpledge-probe"
-    compileFixture source probe
+    compileStaticFixture source probe
 
     allowedPid <- forkExecPledged [Stdio] probe False [] Nothing
     allowedStatus <- getProcessStatus True False allowedPid
@@ -831,14 +847,14 @@ execPledgedAllowedTest :: IO Result
 execPledgedAllowedTest = inChild "exec-pledged-ok" $ do
     let source = "test/fixtures/execpledge-probe.c"
         probe = "/tmp/openbsd-execpledge-probe"
-    compileFixture source probe
+    compileStaticFixture source probe
     execPledged [Stdio] probe True [] Nothing
 
 execPledgedViolationTest :: IO Result
 execPledgedViolationTest = expectSignal sigABRT $ do
     let source = "test/fixtures/execpledge-probe.c"
         probe = "/tmp/openbsd-execpledge-probe"
-    compileFixture source probe
+    compileStaticFixture source probe
     execPledged [Stdio] probe True ["violate"] Nothing
 
 -- descriptor tests
@@ -871,15 +887,14 @@ closeFromTest = do
         Just (Exited (ExitFailure code)) -> pure (Fail ("closefrom check " ++ show code))
         other -> pure (Fail ("child: " ++ show other))
 
--- | closefrom with a descriptor above the highest open one fails
--- with the documented EINVAL.
+-- | closefrom with a descriptor beyond the descriptor table fails
+-- with the documented EBADF.
 closeFromTooHighTest :: IO Result
-closeFromTooHighTest = inChild "closefrom-einval" $ do
-    count <- getDescriptorCount
-    result <- try (closeFrom (Fd (fromIntegral (count + 10))))
+closeFromTooHighTest = inChild "closefrom-ebadf" $ do
+    result <- try (closeFrom (Fd 1000000))
     case result of
         Left (_ :: IOException) -> pure ()
-        Right () -> fail "closefrom above the highest descriptor succeeded"
+        Right () -> fail "closefrom beyond the descriptor table succeeded"
 
 getDescriptorCountTest :: IO Result
 getDescriptorCountTest = inChild "dtablecount" $ do
@@ -922,17 +937,29 @@ rtableGetTest = inChild "rtable-get" $ do
     table <- getRtable
     when (unRtable table < 0) (fail "negative rtable id")
 
+-- | The documented rule: unprivileged processes may change the
+-- domain while it is 0; once non-zero, only root may change it.
 rtableSetEpermTest :: IO Result
 rtableSetEpermTest = inChild "rtable-eperm" $ do
     account <- accountByName "nobody"
     let uid = accountUid account
     _ <- try (setResUserID (Just uid) (Just uid) (Just uid))
         :: IO (Either IOException ())
-    result <- try (setRtable (Rtable 0))
+    setRtable (Rtable 1)
+    current <- getRtable
+    when (current /= Rtable 1) (fail "rtable did not change from 0")
+    result <- try (setRtable (Rtable 2))
     case result of
         Left e | isPermissionError e -> pure ()
         Left e -> fail ("expected EPERM, got " ++ displayException e)
-        Right () -> fail "setRtable succeeded without privileges"
+        Right () -> fail "setRtable from a non-zero domain succeeded without privileges"
+
+rtableSetInvalidTest :: IO Result
+rtableSetInvalidTest = inChild "rtable-einval" $ do
+    result <- try (setRtable (Rtable 1000000))
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right () -> fail "invalid routing domain accepted"
 
 rtableSetRootTest :: IO Result
 rtableSetRootTest = requireRoot $ inChild "rtable-set" $ do
@@ -978,14 +1005,19 @@ immutableBytesReadTest = inChild "mimmutable-read" $ do
         peek (castPtr buffer :: Ptr Word8)
     when (before /= after) (fail "content changed after mimmutable")
 
--- | Writing to an mimmutable region must fault the process: the
--- kernel delivers SIGSEGV for the protection violation.
-immutableBytesWriteFaultTest :: IO Result
-immutableBytesWriteFaultTest = expectSignal sigSEGV $ do
+-- | mimmutable blocks future protection/mapping changes: mprotect
+-- on the region fails, while reads and writes remain allowed.
+immutableBytesProtectionTest :: IO Result
+immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
     bytes <- arc4RandomBytes 4096
     immutableBytes bytes
-    BS.useAsCStringLen bytes $ \(buffer, _) ->
+    BS.useAsCStringLen bytes $ \(buffer, _) -> do
         pokeByteOff (castPtr buffer) 0 (0x42 :: Word8)
+        written <- peek (castPtr buffer :: Ptr Word8)
+        when (written /= 0x42) (fail "write after mimmutable did not stick")
+    protected <- BS.useAsCStringLen bytes $ \(buffer, len) ->
+        c_mprotect (castPtr buffer) (fromIntegral len) protReadWrite
+    when (protected == 0) (fail "mprotect succeeded on immutable memory")
 
 explicitBzeroTest :: IO Result
 explicitBzeroTest = inChild "explicit-bzero" $ do
@@ -1130,12 +1162,13 @@ runtimeTests =
     , ("proc: setProgramName/getProgramName round-trip", prognameTest)
     , ("random: getEntropy returns requested lengths", getEntropyTest)
     , ("rtable: getRtable works unprivileged", rtableGetTest)
-    , ("rtable: setRtable fails with EPERM without privileges", rtableSetEpermTest)
+    , ("rtable: setRtable enforces the non-zero privilege rule", rtableSetEpermTest)
+    , ("rtable: setRtable rejects invalid domains", rtableSetInvalidTest)
     , ("rtable: setRtable switches domains (root)", rtableSetRootTest)
     , ("memory: timingSafeEqual semantics", timingSafeEqualTest)
     , ("memory: timingSafeCompare semantics", timingSafeCompareTest)
     , ("memory: mimmutable keeps reads working", immutableBytesReadTest)
-    , ("memory: mimmutable faults on writes", immutableBytesWriteFaultTest)
+    , ("memory: mimmutable blocks protection changes", immutableBytesProtectionTest)
     , ("memory: explicitBzero zeroes the buffer", explicitBzeroTest)
     , ("memory: freeZero releases the buffer", freeZeroTest)
     , ("auth: cryptNewhash/cryptCheckpass round-trip", cryptCheckpassTest)
