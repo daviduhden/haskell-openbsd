@@ -34,13 +34,28 @@ module System.OpenBSD.Internal
     , c_arc4random_uniform
     , c_hsSetproctitle
     , c_hsResetproctitle
+    , c_closefrom
+    , c_getdtablecount
+    , c_getrtable
+    , c_setrtable
+    , c_getentropy
+    , c_mimmutable
+    , c_explicit_bzero
+    , c_freezero
+    , c_timingsafe_bcmp
+    , c_timingsafe_memcmp
+    , c_getprogname
+    , c_setprogname
+    , c_crypt_checkpass
+    , c_crypt_newhash
+    , c_bcrypt_pbkdf
     , checkNoNul
     , withMaybeCString
     ) where
 
 import Data.Word (Word32)
 import Foreign.C.String (CString, withCString)
-import Foreign.C.Types (CInt(..), CSize(..))
+import Foreign.C.Types (CChar, CInt(..), CSize(..))
 import Foreign.Ptr (Ptr, nullPtr)
 import System.Posix.Types (CGid(..), CUid(..), Fd(..))
 
@@ -90,6 +105,52 @@ foreign import ccall unsafe "hs_setproctitle"
 
 foreign import ccall unsafe "hs_resetproctitle"
     c_hsResetproctitle :: IO ()
+
+foreign import ccall unsafe "unistd.h closefrom"
+    c_closefrom :: CInt -> IO ()
+
+foreign import ccall unsafe "unistd.h getdtablecount"
+    c_getdtablecount :: IO CInt
+
+foreign import ccall unsafe "unistd.h getrtable"
+    c_getrtable :: IO CInt
+
+foreign import ccall unsafe "unistd.h setrtable"
+    c_setrtable :: CInt -> IO CInt
+
+foreign import ccall unsafe "unistd.h getentropy"
+    c_getentropy :: Ptr () -> CSize -> IO CInt
+
+foreign import ccall unsafe "unistd.h mimmutable"
+    c_mimmutable :: Ptr () -> CSize -> IO CInt
+
+foreign import ccall unsafe "string.h explicit_bzero"
+    c_explicit_bzero :: Ptr () -> CSize -> IO ()
+
+foreign import ccall unsafe "stdlib.h freezero"
+    c_freezero :: Ptr () -> CSize -> IO ()
+
+foreign import ccall unsafe "string.h timingsafe_bcmp"
+    c_timingsafe_bcmp :: Ptr () -> Ptr () -> CSize -> IO CInt
+
+foreign import ccall unsafe "string.h timingsafe_memcmp"
+    c_timingsafe_memcmp :: Ptr () -> Ptr () -> CSize -> IO CInt
+
+foreign import ccall unsafe "stdlib.h getprogname"
+    c_getprogname :: IO CString
+
+foreign import ccall unsafe "stdlib.h setprogname"
+    c_setprogname :: CString -> IO ()
+
+foreign import ccall unsafe "unistd.h crypt_checkpass"
+    c_crypt_checkpass :: CString -> CString -> IO CInt
+
+foreign import ccall unsafe "unistd.h crypt_newhash"
+    c_crypt_newhash :: CString -> CString -> Ptr CChar -> CSize -> IO CInt
+
+foreign import ccall unsafe "util.h bcrypt_pbkdf"
+    c_bcrypt_pbkdf :: Ptr () -> CSize -> Ptr () -> CSize -> Ptr () -> CSize
+                  -> Word32 -> IO CInt
 
 #else
 

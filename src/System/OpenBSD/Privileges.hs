@@ -162,9 +162,13 @@ dropPrivilegesTo policy account = mask_ $ do
     case policy of
         PrimaryGroupOnly -> setGroups [gid]
         Initgroups -> initGroups name gid
-    setResGroupID gid gid gid
-    setResUserID uid uid uid
+    setResGroupID (Just gid) (Just gid) (Just gid)
+    setResUserID (Just uid) (Just uid) (Just uid)
     verifyDrop policy account
+
+-- | The native @-1@ \"leave unchanged\" value.
+idValue :: Num a => Maybe a -> a
+idValue = maybe (-1) id
 
 verifyDrop :: GroupPolicy -> Account -> IO ()
 verifyDrop policy account = do
@@ -187,24 +191,29 @@ verifyDrop policy account = do
 -- | Set the real, effective and saved user IDs atomically, as
 -- @setresuid(2)@.
 --
+-- 'Nothing' maps to the native @-1@: leave that ID unchanged.  This
+-- is the faithful form of the system call, including partial changes
+-- such as setting only the effective user ID.
+--
 -- This is a process-wide, security-sensitive /mechanism/: a plain
 -- wrapper around the native call with no policy attached.  Prefer the
 -- high-level 'dropPrivileges' family unless you are implementing a
 -- custom privilege-dropping sequence.
-setResUserID :: UserID -> UserID -> UserID -> IO ()
+setResUserID :: Maybe UserID -> Maybe UserID -> Maybe UserID -> IO ()
 setResUserID ruid euid suid =
     throwErrnoIfMinus1_ "setresuid" $
-        c_setresuid ruid euid suid
+        c_setresuid (idValue ruid) (idValue euid) (idValue suid)
 
 -- | Set the real, effective and saved group IDs atomically, as
--- @setresgid(2)@.
+-- @setresgid(2)@.  'Nothing' maps to the native @-1@: leave that ID
+-- unchanged.
 --
 -- This is a process-wide, security-sensitive /mechanism/ with no
 -- policy attached; see 'setResUserID'.
-setResGroupID :: GroupID -> GroupID -> GroupID -> IO ()
+setResGroupID :: Maybe GroupID -> Maybe GroupID -> Maybe GroupID -> IO ()
 setResGroupID rgid egid sgid =
     throwErrnoIfMinus1_ "setresgid" $
-        c_setresgid rgid egid sgid
+        c_setresgid (idValue rgid) (idValue egid) (idValue sgid)
 
 -- | Query the real, effective and saved user IDs, as
 -- @getresuid(2)@.

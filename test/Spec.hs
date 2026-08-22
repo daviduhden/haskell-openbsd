@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- |
@@ -19,8 +20,9 @@ module Main (main) where
 
 import Control.Exception (IOException, SomeException, displayException,
                              evaluate, try)
-import Control.Monad (forM_, unless, void, when)
+import Control.Monad (forM, forM_, unless, void, when)
 import Data.List (isInfixOf, nub)
+import Data.Word (Word8)
 import Foreign.C.Types (CInt(..))
 import System.Directory (createDirectoryIfMissing,
                          doesDirectoryExist, doesFileExist,
@@ -41,15 +43,17 @@ import System.Posix.IO (closeFd, createPipe, dup, dupTo, fdToHandle,
 import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
                              forkProcess, getProcessGroupID, getProcessID,
                              getProcessStatus)
-import System.Posix.Signals (sigABRT)
+import System.Posix.Signals (sigABRT, sigSEGV)
 import System.Posix.Types (Fd(..), FileMode)
 import System.Posix.User (getEffectiveGroupID, getEffectiveUserID, getGroups,
                           getUserEntryForName, userGroupID, userID)
 import System.Timeout (timeout)
 import Foreign.C.Error (throwErrno)
-import Foreign.Marshal.Array (allocaArray)
+import Foreign.Marshal.Array (allocaArray, peekArray)
+import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Ptr (Ptr)
-import Foreign.Storable (peekElemOff)
+import Foreign.Ptr (castPtr)
+import Foreign.Storable (peek, peekElemOff, pokeByteOff)
 import qualified Data.ByteString as BS
 
 import System.OpenBSD
@@ -162,6 +166,7 @@ captureOutput prog args = do
     child <- forkProcess $ do
         closeFd readFd
         _ <- dupTo writeFd stdOutput
+        _ <- dupTo writeFd stdError
         closeFd writeFd
         _ <- executeFile prog True args Nothing
         exitImmediately (ExitFailure 127)
@@ -229,6 +234,15 @@ promiseNamesTest = do
             && all (not . any (== ' ')) names)
         ("promise serialization mismatch: " ++ show names)
 
+promiseFromNameTest :: IO Result
+promiseFromNameTest =
+    expect (and [promiseFromName (promiseName promise) == Just promise
+                | promise <- [minBound .. maxBound :: Promise]]
+            && promiseFromName "tmppath" == Nothing
+            && promiseFromName "" == Nothing
+            && promiseFromName "bogus" == Nothing)
+        "promiseFromName round-trip mismatch"
+
 unveilPermissionsTest :: IO Result
 unveilPermissionsTest =
     expect (permissionString [] == ""
@@ -256,59 +270,135 @@ nulRejectionTests =
       , expectIOError "setProcessTitle NUL" (setProcessTitle "a\0b") )
     , ( "random: rejects negative buffer lengths"
       , expectIOError "arc4RandomBytes negative" (arc4RandomBytes (-1)) )
+    , ( "proc: forkExec rejects embedded NUL bytes"
+      , expectIOError "forkExec NUL" (forkExec "/tmp\0x" False [] Nothing) )
+    , ( "proc: forkExecPledged rejects embedded NUL bytes"
+      , expectIOError "forkExecPledged NUL" (forkExecPledged [Stdio] "/tmp\0x" False [] Nothing) )
+    , ( "proc: execPledged rejects embedded NUL bytes"
+      , expectIOError "execPledged NUL" (execPledged [Stdio] "/tmp\0x" False [] Nothing) )
+    , ( "proc: setProgramName rejects embedded NUL bytes"
+      , expectIOError "setProgramName NUL" (setProgramName "a\0b") )
+    , ( "random: getEntropy rejects lengths above 256"
+      , expectIOError "getEntropy long" (getEntropy 257) )
+    , ( "random: getEntropy rejects negative lengths"
+      , expectIOError "getEntropy negative" (getEntropy (-1)) )
+    , ( "auth: cryptCheckpass rejects embedded NUL bytes"
+      , expectIOError "cryptCheckpass NUL" (cryptCheckpass (BS.pack [0]) "hash") )
+    , ( "auth: cryptNewhash rejects embedded NUL bytes"
+      , expectIOError "cryptNewhash NUL" (cryptNewhash (BS.pack [0]) "bcrypt,4") )
+    , ( "auth: bcryptPbkdf rejects negative key lengths"
+      , expectIOError "bcryptPbkdf negative" (bcryptPbkdf "p" "s" 4 (-1)) )
     ]
 
 -- pledge tests
 
--- | After pledging the empty promise set only @_exit(2)@ is allowed.
+-- | The @_exit(2)@-only pledge state is valid OpenBSD and is
+-- verified by a standalone C probe (test\/fixtures\/pledge-empty-probe.c)
+-- that performs the complete operation with native @fork(2)@:
 --
--- The probe is a tiny C program (pledge + _exit) with no GHC runtime
--- and no fork involved, so the result reflects the kernel restriction
--- alone.
+-- > fork -> child: pledge("", NULL) -> _exit(0)
+-- > parent: waitpid, strict exit-vs-signal inspection
 --
--- A forked Haskell child cannot carry this probe: under the threaded
--- RTS, pledge(2) briefly suspends the runtime's other thread while
--- the empty promise set is installed, and the thread's next syscall
--- after it is resumed violates the fresh restriction, so the kernel
--- kills the process (observed on OpenBSD 7.9: the child dies of
--- SIGABRT even when the pledge and _exit happen back-to-back inside
--- a C shim).  pledge("") from a forkProcess child of a threaded
--- program is therefore inherently unsupported by the runtime
--- environment, and the property is tested with the standalone probe
--- instead.
+-- plus the direct non-forked @pledge("") -> _exit(0)@ case.  The
+-- probe distinguishes normal exit, SIGABRT and other signals,
+-- pledge failure and waitpid failure with distinct exit statuses.
+--
+-- It is intentionally NOT tested by calling @pledge("")@ from a
+-- 'forkProcess' child under the threaded GHC RTS: reducing the
+-- current promise set to the empty state makes the kernel unwind
+-- sibling runtime threads while cleaning up the now-inaccessible
+-- unveil state, and the resumed threads then perform syscalls
+-- forbidden by the empty promise set, so the kernel aborts the
+-- process.  (A call that only configures execpromises does not take
+-- that path.)  This is an interaction between the kernel's thread
+-- handling during extreme current-process reduction and the runtime
+-- environment, not a defect of pledge(2) or of this binding.
 pledgeEmptyTest :: IO Result
 pledgeEmptyTest = do
-    probe <- pledgeEmptyProbeFixture
+    let source = "test/fixtures/pledge-empty-probe.c"
+        probe = "/tmp/openbsd-pledge-empty-probe"
+    compileFixture source probe
     output <- captureOutput probe []
     removeFile probe
     case output of
         Left e -> pure (Fail ("probe failed: " ++ e))
         Right _ -> pure Pass
 
-pledgeEmptyProbeFixture :: IO FilePath
-pledgeEmptyProbeFixture = do
-    let cPath = "/tmp/openbsd-pledge-empty-probe.c"
-        binPath = "/tmp/openbsd-pledge-empty-probe"
-    writeFile cPath (unlines
-        [ "#include <signal.h>"
-        , "#include <unistd.h>"
-        , "int"
-        , "main(void)"
-        , "{"
-        , "    sigset_t set;"
-        , "    sigfillset(&set);"
-        , "    (void)sigprocmask(SIG_BLOCK, &set, NULL);"
-        , "    if (pledge(\"\", NULL) == -1)"
-        , "        _exit(3);"
-        , "    _exit(0);"
-        , "}"
-        ])
-    compiled <- captureOutput "/usr/bin/cc" ["-o", binPath, cPath]
-    removeFile cPath
-    case compiled of
-        Left e -> fail ("cc failed: " ++ e)
+compileFixture :: FilePath -> FilePath -> IO ()
+compileFixture source output = do
+    result <- captureOutput "/usr/bin/cc"
+        ["-Wall", "-Wextra", "-Werror", "-o", output, source]
+    case result of
+        Left e -> fail ("cc failed for " ++ source ++ ": " ++ e)
         Right _ -> pure ()
-    pure binPath
+
+-- | Fork a child that immediately execs @prog@ with @args@,
+-- capturing stdout and stderr.  The child performs no pledge call
+-- and no other meaningful Haskell work: its only purpose is to reach
+-- exec as directly as possible.
+execCapture :: FilePath -> [String] -> IO (Maybe ProcessStatus, String)
+execCapture prog args = do
+    (readFd, writeFd) <- createPipe
+    child <- forkProcess $ do
+        closeFd readFd
+        _ <- dupTo writeFd stdOutput
+        _ <- dupTo writeFd stdError
+        closeFd writeFd
+        _ <- executeFile prog True args Nothing
+        _ <- exitImmediately (ExitFailure 127)
+        pure ()
+    closeFd writeFd
+    output <- timeout 60000000 $ do
+        h <- fdToHandle readFd
+        hSetBinaryMode h True
+        captured <- hGetContents h
+        _ <- evaluate (length captured)
+        pure captured
+    status <- getProcessStatus True False child
+    closeFd readFd
+    pure (status, maybe "" id output)
+
+-- | The supported fork architecture under the threaded RTS:
+--
+-- > parent: pledgeChild [Stdio]  (exec ceiling, parent-side)
+-- > parent: still unrestricted    (an rpath-class open succeeds)
+-- > forkProcess
+-- > child:  executeFile immediately (no pledge call in the child)
+-- > new image starts under the inherited execpromises
+--
+-- OpenBSD copies PS_EXECPLEDGE and ps_execpledge across fork(2) and
+-- applies them when the descendant executes a new image, so the
+-- parent-side setting survives the fork.  Verified through actual
+-- allowed and forbidden operations, not by trusting return values.
+forkExecPledgeTest :: IO Result
+forkExecPledgeTest = inChild "fork-exec" $ do
+    let source = "test/fixtures/execpledge-probe.c"
+        probe = "/tmp/openbsd-execpledge-probe"
+    compileFixture source probe
+
+    -- Configure the exec ceiling in the parent, before any fork.
+    pledgeChild [Stdio]
+
+    -- Exec promises do not restrict the current process: an
+    -- operation outside the child's future promise set still works.
+    hostnameHandle <- openFile "/etc/hostname" ReadMode
+    _ <- evaluate (length <$> hGetContents hostnameHandle)
+    hClose hostnameHandle
+
+    (allowedStatus, allowedOut) <- execCapture probe []
+    when (allowedOut /= "execpledge-ok\n") $
+        fail ("unexpected allowed-case output: " ++ show allowedOut)
+    case allowedStatus of
+        Just (Exited ExitSuccess) -> pure ()
+        other -> fail ("allowed case did not exit normally: " ++ show other)
+
+    (forbiddenStatus, _) <- execCapture probe ["violate"]
+    case forbiddenStatus of
+        Just (Terminated signal _) | signal == sigABRT -> pure ()
+        other -> fail ("expected SIGABRT for the forbidden open, got: "
+            ++ show other)
+
+    removeFile probe
 
 pledgeNullTest :: IO Result
 pledgeNullTest = inChild "pledge-null" $ do
@@ -430,12 +520,12 @@ dropPrivilegesTest = requireRoot $ inChild "privdrop" $ do
         fail ("gid mismatch after drop: " ++ show rGid)
     when (groups /= [gid]) $
         fail ("supplementary groups were not replaced: " ++ show groups)
-    regainUid <- try (setResUserID rootUid rootUid rootUid)
+    regainUid <- try (setResUserID (Just rootUid) (Just rootUid) (Just rootUid))
     case regainUid of
         Left e | isPermissionError e -> pure ()
         Left e -> fail ("expected EPERM when regaining root uid, got " ++ displayException e)
         Right () -> fail "root uid was regained after the drop"
-    regainGid <- try (setResGroupID rootGid rootGid rootGid)
+    regainGid <- try (setResGroupID (Just rootGid) (Just rootGid) (Just rootGid))
     case regainGid of
         Left e | isPermissionError e -> pure ()
         Left e -> fail ("expected EPERM when regaining root gid, got " ++ displayException e)
@@ -467,7 +557,7 @@ dropUnprivilegedTest :: IO Result
 dropUnprivilegedTest = inChild "privdrop-eperm" $ do
     account <- accountByName "nobody"
     let uid = accountUid account
-    _ <- try (setResUserID uid uid uid) :: IO (Either IOException ())
+    _ <- try (setResUserID (Just uid) (Just uid) (Just uid)) :: IO (Either IOException ())
     result <- try (dropPrivileges "nobody")
     case result of
         Left e | isPermissionError e -> pure ()
@@ -485,6 +575,19 @@ pledgeIdLifecycleTest = requireRoot $ inChild "pledge-id-lifecycle" $ do
     when (rUid /= (uid, uid, uid)) $
         fail ("identity is wrong after drop: " ++ show rUid)
 
+-- | The native -1 semantics: Nothing leaves each ID unchanged, and
+-- the no-op call succeeds for any caller.
+setResPassthroughTest :: IO Result
+setResPassthroughTest = inChild "setres-passthrough" $ do
+    beforeUid <- getResUserID
+    setResUserID Nothing Nothing Nothing
+    afterUid <- getResUserID
+    when (beforeUid /= afterUid) (fail "setresuid(-1,-1,-1) changed the IDs")
+    beforeGid <- getResGroupID
+    setResGroupID Nothing Nothing Nothing
+    afterGid <- getResGroupID
+    when (beforeGid /= afterGid) (fail "setresgid(-1,-1,-1) changed the IDs")
+
 -- chroot tests
 
 -- | Deterministic in both the privileged and unprivileged phases: the
@@ -494,7 +597,7 @@ chrootEpermTest :: IO Result
 chrootEpermTest = inChild "chroot-eperm" $ do
     account <- accountByName "nobody"
     let uid = accountUid account
-    _ <- try (setResUserID uid uid uid) :: IO (Either IOException ())
+    _ <- try (setResUserID (Just uid) (Just uid) (Just uid)) :: IO (Either IOException ())
     result <- try (chroot "/")
     case result of
         Left e | isPermissionError e -> pure ()
@@ -683,6 +786,247 @@ arc4randomPledgeTest = inChild "arc4random-pledge" $ do
     _ <- arc4RandomUniform 10
     pure ()
 
+-- exec-helper tests
+
+-- | The public forkExec: fork plus immediate exec, no pledge policy
+-- involved; the target runs normally.
+forkExecTest :: IO Result
+forkExecTest = inChild "fork-exec-plain" $ do
+    let source = "test/fixtures/execpledge-probe.c"
+        probe = "/tmp/openbsd-execpledge-probe"
+    compileFixture source probe
+    pid <- forkExec probe False [] Nothing
+    status <- getProcessStatus True False pid
+    removeFile probe
+    case status of
+        Just (Exited ExitSuccess) -> pure ()
+        other -> fail ("executed target did not exit normally: " ++ show other)
+
+-- | The public forkExecPledged: exec promises configured in the
+-- caller, inherited across fork, and applied to the new image; the
+-- allowed case exits 0 and the forbidden case dies of SIGABRT.
+forkExecPledgedTest :: IO Result
+forkExecPledgedTest = inChild "fork-exec-pledged" $ do
+    let source = "test/fixtures/execpledge-probe.c"
+        probe = "/tmp/openbsd-execpledge-probe"
+    compileFixture source probe
+
+    allowedPid <- forkExecPledged [Stdio] probe False [] Nothing
+    allowedStatus <- getProcessStatus True False allowedPid
+    case allowedStatus of
+        Just (Exited ExitSuccess) -> pure ()
+        other -> fail ("allowed case did not exit normally: " ++ show other)
+
+    forbiddenPid <- forkExecPledged [Stdio] probe False ["violate"] Nothing
+    forbiddenStatus <- getProcessStatus True False forbiddenPid
+    removeFile probe
+    case forbiddenStatus of
+        Just (Terminated signal _) | signal == sigABRT -> pure ()
+        other -> fail ("expected SIGABRT for the forbidden open, got: "
+            ++ show other)
+
+-- | The public execPledged: replace the current image under the given
+-- exec promise ceiling.
+execPledgedAllowedTest :: IO Result
+execPledgedAllowedTest = inChild "exec-pledged-ok" $ do
+    let source = "test/fixtures/execpledge-probe.c"
+        probe = "/tmp/openbsd-execpledge-probe"
+    compileFixture source probe
+    execPledged [Stdio] probe True [] Nothing
+
+execPledgedViolationTest :: IO Result
+execPledgedViolationTest = expectSignal sigABRT $ do
+    let source = "test/fixtures/execpledge-probe.c"
+        probe = "/tmp/openbsd-execpledge-probe"
+    compileFixture source probe
+    execPledged [Stdio] probe True ["violate"] Nothing
+
+-- descriptor tests
+
+-- | closefrom(2) through a raw fork child: descriptor checks use
+-- dup(2) only, since Handle-based I/O is unusable after closefrom.
+closeFromTest :: IO Result
+closeFromTest = do
+    child <- forkProcess $ do
+        fds <- forM [1 .. 3 :: Int] $ \_ -> do
+            h <- openFile "/dev/null" ReadMode
+            handleToFd h
+        let low = head fds
+            mid = fds !! 1
+            high = fds !! 2
+        closeFrom mid
+        okLow <- checkFdOpen low
+        okMid <- checkFdOpen mid
+        okHigh <- checkFdOpen high
+        okStd <- and <$> mapM checkFdOpen [stdInput, stdOutput, stdError]
+        closeFd low
+        c__exit (if okLow && not okMid && not okHigh && okStd then 0
+                 else if not okLow then 11
+                 else if okMid then 12
+                 else if okHigh then 13
+                 else 14)
+    status <- getProcessStatus True False child
+    case status of
+        Just (Exited ExitSuccess) -> pure Pass
+        Just (Exited (ExitFailure code)) -> pure (Fail ("closefrom check " ++ show code))
+        other -> pure (Fail ("child: " ++ show other))
+
+-- | closefrom with a descriptor above the highest open one fails
+-- with the documented EINVAL.
+closeFromTooHighTest :: IO Result
+closeFromTooHighTest = inChild "closefrom-einval" $ do
+    count <- getDescriptorCount
+    result <- try (closeFrom (Fd (fromIntegral (count + 10))))
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right () -> fail "closefrom above the highest descriptor succeeded"
+
+getDescriptorCountTest :: IO Result
+getDescriptorCountTest = inChild "dtablecount" $ do
+    count0 <- getDescriptorCount
+    handles <- forM [1 .. 5 :: Int] (\_ -> openFile "/dev/null" ReadMode)
+    count1 <- getDescriptorCount
+    mapM_ hClose handles
+    when (count1 <= count0) (fail "descriptor count did not increase")
+    pledge [Stdio]
+    count2 <- getDescriptorCount
+    when (count2 <= 0) (fail "bogus descriptor count under pledge")
+
+-- program-name tests
+
+prognameTest :: IO Result
+prognameTest = inChild "progname" $ do
+    setProgramName "obd-progname-test"
+    name <- getProgramName
+    when (name /= "obd-progname-test") $
+        fail ("program name mismatch: " ++ show name)
+
+-- entropy tests
+
+getEntropyTest :: IO Result
+getEntropyTest = inChild "getentropy" $ do
+    b0 <- getEntropy 0
+    when (BS.length b0 /= 0) (fail "zero-length entropy request")
+    b1 <- getEntropy 1
+    when (BS.length b1 /= 1) (fail "one-byte entropy request")
+    b256 <- getEntropy 256
+    when (BS.length b256 /= 256) (fail "256-byte entropy request")
+    pledge [Stdio]
+    b16 <- getEntropy 16
+    when (BS.length b16 /= 16) (fail "entropy request under pledge")
+
+-- routing-domain tests
+
+rtableGetTest :: IO Result
+rtableGetTest = inChild "rtable-get" $ do
+    table <- getRtable
+    when (unRtable table < 0) (fail "negative rtable id")
+
+rtableSetEpermTest :: IO Result
+rtableSetEpermTest = inChild "rtable-eperm" $ do
+    account <- accountByName "nobody"
+    let uid = accountUid account
+    _ <- try (setResUserID (Just uid) (Just uid) (Just uid))
+        :: IO (Either IOException ())
+    result <- try (setRtable (Rtable 0))
+    case result of
+        Left e | isPermissionError e -> pure ()
+        Left e -> fail ("expected EPERM, got " ++ displayException e)
+        Right () -> fail "setRtable succeeded without privileges"
+
+rtableSetRootTest :: IO Result
+rtableSetRootTest = requireRoot $ inChild "rtable-set" $ do
+    initial <- getRtable
+    setRtable initial
+    setRtable (Rtable 1)
+    current <- getRtable
+    when (current /= Rtable 1) $
+        fail ("rtable not changed: " ++ show current)
+
+-- memory tests
+
+timingSafeEqualTest :: IO Result
+timingSafeEqualTest = inChild "timingsafe-eq" $ do
+    t1 <- timingSafeEqual "abc" "abc"
+    t2 <- timingSafeEqual "abc" "abd"
+    t3 <- timingSafeEqual "x" "x"
+    t4 <- timingSafeEqual "" ""
+    t5 <- timingSafeEqual "a" ""
+    t6 <- timingSafeEqual (BS.pack [1, 2, 3]) (BS.pack [1, 2, 3])
+    t7 <- timingSafeEqual (BS.pack [1, 2, 3]) (BS.pack [1, 2, 4])
+    when (not (and [t1, t3, t4, t6] && not (or [t2, t5, t7]))) $
+        fail "timingSafeEqual mismatch"
+
+timingSafeCompareTest :: IO Result
+timingSafeCompareTest = inChild "timingsafe-cmp" $ do
+    r1 <- timingSafeCompare "abc" "abd"
+    r2 <- timingSafeCompare "abd" "abc"
+    r3 <- timingSafeCompare "abc" "abc"
+    r4 <- timingSafeCompare "ab" "abc"
+    r5 <- timingSafeCompare "abc" "ab"
+    r6 <- timingSafeCompare "" ""
+    when ([r1, r2, r3, r4, r5, r6] /= [LT, GT, EQ, LT, GT, EQ]) $
+        fail "timingSafeCompare mismatch"
+
+immutableBytesReadTest :: IO Result
+immutableBytesReadTest = inChild "mimmutable-read" $ do
+    bytes <- arc4RandomBytes 4096
+    before <- BS.useAsCStringLen bytes $ \(buffer, _) ->
+        peek (castPtr buffer :: Ptr Word8)
+    immutableBytes bytes
+    after <- BS.useAsCStringLen bytes $ \(buffer, _) ->
+        peek (castPtr buffer :: Ptr Word8)
+    when (before /= after) (fail "content changed after mimmutable")
+
+-- | Writing to an mimmutable region must fault the process: the
+-- kernel delivers SIGSEGV for the protection violation.
+immutableBytesWriteFaultTest :: IO Result
+immutableBytesWriteFaultTest = expectSignal sigSEGV $ do
+    bytes <- arc4RandomBytes 4096
+    immutableBytes bytes
+    BS.useAsCStringLen bytes $ \(buffer, _) ->
+        pokeByteOff (castPtr buffer) 0 (0x42 :: Word8)
+
+explicitBzeroTest :: IO Result
+explicitBzeroTest = inChild "explicit-bzero" $ do
+    buffer <- mallocBytes 64
+    mapM_ (\i -> pokeByteOff buffer i (0x5a :: Word8)) [0 .. 63]
+    explicitBzero buffer 64
+    contents <- peekArray 64 (buffer :: Ptr Word8)
+    when (any (/= 0) contents) (fail "buffer not zeroed")
+    free buffer
+
+freeZeroTest :: IO Result
+freeZeroTest = inChild "freezero" $ do
+    buffer <- mallocBytes 32
+    freeZero buffer 32
+
+-- authentication tests
+
+cryptCheckpassTest :: IO Result
+cryptCheckpassTest = inChild "crypt" $ do
+    hash <- cryptNewhash "correct horse battery staple" "bcrypt,4"
+    matching <- cryptCheckpass "correct horse battery staple" hash
+    when (not matching) (fail "matching password rejected")
+    wrong <- cryptCheckpass "wrong password" hash
+    when wrong (fail "wrong password accepted")
+
+cryptNewhashInvalidPrefTest :: IO Result
+cryptNewhashInvalidPrefTest = inChild "crypt-badpref" $ do
+    result <- try (cryptNewhash "pw" "bogus,9")
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right _ -> fail "unsupported preference accepted"
+
+bcryptPbkdfTest :: IO Result
+bcryptPbkdfTest = inChild "bcrypt-pbkdf" $ do
+    key <- bcryptPbkdf "password" "salt" 4 32
+    when (BS.length key /= 32) (fail "wrong key length")
+    key2 <- bcryptPbkdf "password" "salt" 4 32
+    when (key /= key2) (fail "derivation not deterministic")
+    emptyKey <- bcryptPbkdf "password" "salt" 4 0
+    when (BS.length emptyKey /= 0) (fail "zero-length key not empty")
+
 -- daemonization tests
 
 sessionCheck :: IO Bool
@@ -768,12 +1112,35 @@ daemonizePreserveTest = do
 pureTests :: [(String, IO Result)]
 pureTests =
     [ ("pledge: serializes every promise", promiseNamesTest)
+    , ("pledge: promiseFromName round-trips", promiseFromNameTest)
     , ("unveil: serializes permission sets", unveilPermissionsTest)
     ] ++ nulRejectionTests
 
 runtimeTests :: [(String, IO Result)]
 runtimeTests =
     [ ("pledge: empty promise list restricts to _exit", pledgeEmptyTest)
+    , ("pledge: fork plus immediate exec applies execpromises", forkExecPledgeTest)
+    , ("proc: forkExec runs the target", forkExecTest)
+    , ("proc: forkExecPledged applies the exec ceiling", forkExecPledgedTest)
+    , ("proc: execPledged starts the new image pledged", execPledgedAllowedTest)
+    , ("proc: execPledged violation dies of SIGABRT", execPledgedViolationTest)
+    , ("proc: closeFrom closes descriptors", closeFromTest)
+    , ("proc: closeFrom rejects out-of-range descriptors", closeFromTooHighTest)
+    , ("proc: getDescriptorCount reflects open descriptors", getDescriptorCountTest)
+    , ("proc: setProgramName/getProgramName round-trip", prognameTest)
+    , ("random: getEntropy returns requested lengths", getEntropyTest)
+    , ("rtable: getRtable works unprivileged", rtableGetTest)
+    , ("rtable: setRtable fails with EPERM without privileges", rtableSetEpermTest)
+    , ("rtable: setRtable switches domains (root)", rtableSetRootTest)
+    , ("memory: timingSafeEqual semantics", timingSafeEqualTest)
+    , ("memory: timingSafeCompare semantics", timingSafeCompareTest)
+    , ("memory: mimmutable keeps reads working", immutableBytesReadTest)
+    , ("memory: mimmutable faults on writes", immutableBytesWriteFaultTest)
+    , ("memory: explicitBzero zeroes the buffer", explicitBzeroTest)
+    , ("memory: freeZero releases the buffer", freeZeroTest)
+    , ("auth: cryptNewhash/cryptCheckpass round-trip", cryptCheckpassTest)
+    , ("auth: cryptNewhash rejects unsupported preferences", cryptNewhashInvalidPrefTest)
+    , ("auth: bcryptPbkdf derives deterministic keys", bcryptPbkdfTest)
     , ("pledge: NULL arguments change nothing", pledgeNullTest)
     , ("pledge: NULL promises with empty exec promises", pledgeNullExecEmptyTest)
     , ("pledge: promise increase fails with EPERM", pledgeIncreaseTest)
@@ -788,6 +1155,7 @@ runtimeTests =
     , ("priv: Initgroups policy (root)", dropPrivilegesInitgroupsTest)
     , ("priv: unknown user is reported", dropUnknownUserTest)
     , ("priv: dropPrivileges fails with EPERM without privileges", dropUnprivilegedTest)
+    , ("priv: setResUserID/setResGroupID honor the -1 passthrough", setResPassthroughTest)
     , ("priv: id promise can be removed after dropping (root)", pledgeIdLifecycleTest)
     , ("chroot: chroot fails with EPERM without privileges", chrootEpermTest)
     , ("chroot: enterChroot confines the process (root)", enterChrootTest)

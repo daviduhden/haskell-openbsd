@@ -22,6 +22,7 @@ module System.OpenBSD.Pledge
     ( -- * Promises
       Promise(..)
     , promiseName
+    , promiseFromName
       -- * Restricting the current process
     , pledge
       -- * Restricting future children (exec promises)
@@ -121,6 +122,18 @@ promiseName Vmm       = "vmm"
 promiseName Wpath     = "wpath"
 promiseName Wroute    = "wroute"
 
+-- | Parse a single promise name, exactly as accepted by @pledge(2)@.
+--
+-- 'Nothing' for anything else, including the removed @\"tmppath\"@
+-- promise (which the kernel rejects with @EINVAL@).  Useful for
+-- reading promise sets from configuration; always round-trips with
+-- 'promiseName'.
+promiseFromName :: String -> Maybe Promise
+promiseFromName name = lookup name
+    [ (promiseName promise, promise)
+    | promise <- [minBound .. maxBound]
+    ]
+
 promiseList :: [Promise] -> String
 promiseList = unwords . map promiseName
 
@@ -141,12 +154,35 @@ pledge promises = pledgeParts (Just promises) Nothing
 -- This sets the /exec/ promises: any future program executed by this
 -- process starts with exactly these promises (unless the executed
 -- file has setuid\/setgid bits, in which case execution is blocked
--- with @EACCES@).  The current process is unaffected.
+-- with @EACCES@).  It does /not/ restrict the current process: the
+-- caller's ordinary system calls keep working under its current
+-- promise set.
+--
+-- The setting is monotonic and cannot be widened later, and it is
+-- inherited across @fork(2)@: OpenBSD copies the exec-promise state
+-- into every descendant, which applies it when that descendant
+-- executes a new image.  It is therefore suitable as a shared
+-- promise ceiling for all future executed descendants, and the
+-- preferred way to configure the pledge policy of a fork\/exec child
+-- is to call this /in the parent, before forking/, keeping the
+-- post-fork child limited to an immediate exec.  It is not suitable
+-- when each child needs an unrelated or broader policy.
+--
+-- If the calling process has already pledged itself, its /current/
+-- promises must still allow the operations it performs (a fork\/exec
+-- sequence generally needs @proc@ and @exec@); the exec promises are
+-- a separate mechanism.
 pledgeChild :: [Promise] -> IO ()
 pledgeChild promises = pledgeParts Nothing (Just promises)
 
 -- | Restrict both the current process and future children in a single
 -- @pledge(2)@ call, as @pledge(promises, execpromises)@.
+--
+-- Both parts are reduced atomically.  This is not a substitute for
+-- 'pledgeChild' when the intent is only to constrain future execs:
+-- the current process is restricted immediately, which may be
+-- inappropriate (and, for extreme current-process reductions, is
+-- unsafe in a post-fork runtime environment).
 pledgeBoth :: [Promise] -> [Promise] -> IO ()
 pledgeBoth promises execPromises =
     pledgeParts (Just promises) (Just execPromises)
@@ -163,6 +199,19 @@ pledgeBoth promises execPromises =
 --
 -- Both parts are changed in a single native call, so current and exec
 -- promises can be restricted atomically.
+--
+-- Note about the empty promise set: @\"\"@ is a valid OpenBSD
+-- operation, but applying an @_exit(2)@-only restriction to a normal
+-- live Haskell process is generally incompatible with the runtime,
+-- because the RTS itself performs system calls.  This is particularly
+-- significant with @-threaded@ and
+-- 'System.Posix.Process.forkProcess': OpenBSD's pledge
+-- transition may unwind sibling runtime threads, and their resumed
+-- activity requires syscalls forbidden by the empty promise set, so
+-- the kernel aborts the process.  For @_exit@-only workloads use
+-- native code; for restricting a Haskell program, exec a separate
+-- process image with a realistic promise policy (for example with
+-- 'pledgeChild' immediately before @executeFile@).
 pledgeParts :: Maybe [Promise] -> Maybe [Promise] -> IO ()
 pledgeParts promises execPromises =
     withMaybeCString (promiseList <$> promises) $ \cPromises ->

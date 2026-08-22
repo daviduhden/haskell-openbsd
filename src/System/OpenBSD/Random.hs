@@ -16,14 +16,17 @@ module System.OpenBSD.Random
       arc4Random
     , arc4RandomBytes
     , arc4RandomUniform
+      -- * Low-level entropy
+    , getEntropy
     ) where
 
 import Data.ByteString (ByteString, empty, packCStringLen)
 import Data.Word (Word32)
+import Foreign.C.Error (throwErrnoIfMinus1_)
 import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Ptr (castPtr)
 import System.OpenBSD.Internal (c_arc4random, c_arc4random_buf,
-                                c_arc4random_uniform)
+                                c_arc4random_uniform, c_getentropy)
 
 -- | Return a single uniformly distributed 32-bit value, as
 -- @arc4random()@.
@@ -48,6 +51,29 @@ arc4RandomBytes n
         c_arc4random_buf (castPtr buf) (fromIntegral n)
         bytes <- packCStringLen (castPtr buf, n)
         free buf
+        pure bytes
+
+-- | Read up to 256 bytes of entropy from the kernel, as
+-- @getentropy(2)@.
+--
+-- A low-level primitive for specialized use (for example reseeding
+-- custom generators): ordinary random-number needs are better served
+-- by the 'arc4Random' family, which the OpenBSD manual recommends.
+-- The native maximum request size is respected: requests above 256
+-- bytes are rejected with a clear exception rather than being
+-- silently split, and a zero-length request returns the empty
+-- bytestring.  Allowed under the @stdio@ pledge promise.
+getEntropy :: Int -> IO ByteString
+getEntropy n
+    | n < 0 = ioError (userError "getEntropy: negative length")
+    | n > 256 = ioError (userError "getEntropy: length exceeds 256 bytes")
+    | n == 0 = pure empty
+    | otherwise = do
+        buffer <- mallocBytes n
+        throwErrnoIfMinus1_ "getentropy" $
+            c_getentropy (castPtr buffer) (fromIntegral n)
+        bytes <- packCStringLen (castPtr buffer, n)
+        free buffer
         pure bytes
 
 -- | Return a uniformly distributed 32-bit value strictly less than
