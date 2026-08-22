@@ -34,7 +34,6 @@ module System.OpenBSD.Internal
     , c_arc4random_uniform
     , c_hsSetproctitle
     , c_hsResetproctitle
-    , c_hsPledgeEmptyThenExit
     , checkNoNul
     , withMaybeCString
     ) where
@@ -91,9 +90,6 @@ foreign import ccall unsafe "hs_setproctitle"
 
 foreign import ccall unsafe "hs_resetproctitle"
     c_hsResetproctitle :: IO ()
-
-foreign import ccall unsafe "hs_pledge_empty_then_exit"
-    c_hsPledgeEmptyThenExit :: IO ()
 
 #else
 
