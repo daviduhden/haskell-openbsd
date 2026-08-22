@@ -63,7 +63,7 @@ jobs:
             cabal build all
             cabal test all --test-show-details=direct
             cabal check
-            cabal haddock all
+            cabal haddock all --haddock-options=--verbosity=1
             cabal sdist
             SDIST_TAR=$(ls dist-newstyle/sdist/openbsd-*.tar.gz | head -n 1)
             rm -rf /tmp/sdist-check
@@ -74,7 +74,11 @@ jobs:
             cabal test all --test-show-details=direct
             EOF
             chown builder /tmp/openbsd-build.ksh
-            doas -u builder /bin/ksh /tmp/openbsd-build.ksh
+            if ! doas -u builder /bin/ksh /tmp/openbsd-build.ksh; then
+                echo "== dmesg tail ==" >&2
+                dmesg | tail -30 >&2
+                exit 1
+            fi
 
             echo "== Privileged tests as root =="
             TESTBIN=$(find dist-newstyle -type f -name openbsd-tests -perm -111 | head -n 1)
