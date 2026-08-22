@@ -68,13 +68,10 @@ foreign import ccall unsafe "unistd.h _exit"
 foreign import ccall unsafe "sys/socket.h socketpair"
     c_socketpair :: CInt -> CInt -> CInt -> Ptr CInt -> IO CInt
 
--- PROT_READ, requesting a real protection change for the
--- mimmutable test (a no-op change may bypass the immutable check).
-foreign import ccall unsafe "sys/mman.h mprotect"
-    c_mprotect :: Ptr () -> CSize -> CInt -> IO CInt
-
-protRead :: CInt
-protRead = 1
+-- munmap(2) for the mimmutable test: unmap is the strongest
+-- documented enforcement point for immutable mappings.
+foreign import ccall unsafe "sys/mman.h munmap"
+    c_munmap :: Ptr () -> CSize -> IO CInt
 
 afUnix, sockStream :: CInt
 afUnix = 1
@@ -981,8 +978,8 @@ immutableBytesReadTest = inChild "mimmutable-read" $ do
         peek (castPtr buffer :: Ptr Word8)
     when (before /= after) (fail "content changed after mimmutable")
 
--- | mimmutable blocks future protection/mapping changes: mprotect
--- on the region fails, while reads and writes remain allowed.
+-- | mimmutable blocks future mapping changes: munmap on the region
+-- fails, while reads and writes remain allowed.
 immutableBytesProtectionTest :: IO Result
 immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
     bytes <- arc4RandomBytes 4096
@@ -991,9 +988,9 @@ immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
         pokeByteOff (castPtr buffer) 0 (0x42 :: Word8)
         written <- peek (castPtr buffer :: Ptr Word8)
         when (written /= 0x42) (fail "write after mimmutable did not stick")
-    protected <- BS.useAsCStringLen bytes $ \(buffer, len) ->
-        c_mprotect (castPtr buffer) (fromIntegral len) protRead
-    when (protected == 0) (fail "mprotect succeeded on immutable memory")
+    unmapped <- BS.useAsCStringLen bytes $ \(buffer, len) ->
+        c_munmap (castPtr buffer) (fromIntegral len)
+    when (unmapped == 0) (fail "munmap succeeded on immutable memory")
 
 explicitBzeroTest :: IO Result
 explicitBzeroTest = inChild "explicit-bzero" $ do
