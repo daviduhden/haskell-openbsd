@@ -132,7 +132,7 @@ daemonizeWith options daemonBody = do
         daemonizeChild options
         daemonBody
         exitImmediately ExitSuccess
-    exitImmediately ExitSuccess
+    _ <- exitImmediately ExitSuccess
     exitImmediately ExitSuccess
 
 daemonizeChild :: DaemonOptions -> IO ()
