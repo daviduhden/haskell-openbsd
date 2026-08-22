@@ -16,9 +16,9 @@ module Main (main) where
 import Control.Exception (IOException, SomeException, displayException, try)
 import Control.Monad (unless, void, when)
 import Data.List (nub)
-import Foreign.C.Types (CInt)
+import Foreign.C.Types (CInt(..))
 import System.Exit (ExitCode(..), exitWith)
-import System.IO (BufferMode(..), hSetBuffering, stdout)
+import System.IO (BufferMode(..), hPutStrLn, hSetBuffering, stderr, stdout)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Posix.Process (ProcessStatus(..), exitImmediately, forkProcess,
                              getProcessID, getProcessStatus)
@@ -27,6 +27,9 @@ import System.Posix.User (getEffectiveUserID, getGroups, getUserEntryForName,
                           userID)
 
 import System.OpenBSD
+
+foreign import ccall unsafe "unistd.h _exit"
+    c__exit :: CInt -> IO ()
 
 data Result = Pass | Skip String | Fail String
 
@@ -59,7 +62,11 @@ inChild label action = do
         outcome <- try action
         case outcome of
             Left (e :: SomeException) -> do
-                writeFile logPath (displayException e)
+                logged <- try (writeFile logPath (displayException e))
+                case logged of
+                    Right () -> pure ()
+                    Left (_ :: SomeException) ->
+                        hPutStrLn stderr ("child failure: " ++ displayException e)
                 exitImmediately (ExitFailure 1)
             Right () -> exitImmediately ExitSuccess
     status <- getProcessStatus True False child
@@ -130,9 +137,24 @@ unveilPermissionsTest =
 
 -- pledge tests
 
+-- | After pledging the empty promise set only @_exit(2)@ is allowed.
+-- This test must not use 'exitImmediately' from the @unix@ package:
+-- it calls @exit(3)@, whose atexit handlers write to stdio and would
+-- be killed by the pledge.  A raw @_exit(2)@ is used instead.
 pledgeEmptyTest :: IO Result
-pledgeEmptyTest = inChild "pledge-empty" $
-    pledgeRaw (Just []) Nothing
+pledgeEmptyTest = do
+    child <- forkProcess $ do
+        result <- try (pledgeRaw (Just []) Nothing)
+        case result of
+            Left (_ :: SomeException) -> c__exit 1
+            Right () -> c__exit 0
+    status <- getProcessStatus True False child
+    case status of
+        Just (Exited ExitSuccess) -> pure Pass
+        Just (Exited (ExitFailure _)) -> pure (Fail "pledge \"\" was rejected")
+        Just (Terminated signal _) ->
+            pure (Fail ("child was terminated by signal " ++ show signal))
+        _ -> pure (Fail "child vanished")
 
 pledgeNullTest :: IO Result
 pledgeNullTest = inChild "pledge-null" $ do
@@ -177,13 +199,16 @@ unveilLockTest = inChild "unveil-lock" $ do
         Left e -> fail ("expected EPERM after locking, got " ++ displayException e)
         Right () -> fail "unveil succeeded after lockUnveil"
 
+-- | unveil(2) resolves non-directory paths with namei in CREATE mode:
+-- the final component may legitimately not exist (it is remembered by
+-- name).  Only a nonexistent *directory* component fails with ENOENT.
 unveilNonexistentTest :: IO Result
 unveilNonexistentTest = inChild "unveil-enoent" $ do
-    result <- try (unveil "/openbsd-test-path-that-does-not-exist" [Read])
+    result <- try (unveil "/openbsd-test-dir-that-does-not-exist/file" [Read])
     case result of
         Left e | isDoesNotExistError e -> pure ()
         Left e -> fail ("expected ENOENT, got " ++ displayException e)
-        Right () -> fail "nonexistent path was unveiled"
+        Right () -> fail "path with nonexistent directory was unveiled"
 
 unveilEnforcementTest :: IO Result
 unveilEnforcementTest = inChild "unveil-enforcement" $ do
@@ -279,7 +304,7 @@ runtimeTests =
     , ("pledge: exec promise increase fails with EPERM", pledgeExecIncreaseTest)
     , ("pledge: violation aborts the process with SIGABRT", pledgeViolationTest)
     , ("unveil: rules can be installed and locked", unveilLockTest)
-    , ("unveil: nonexistent path fails with ENOENT", unveilNonexistentTest)
+    , ("unveil: path with nonexistent directory fails with ENOENT", unveilNonexistentTest)
     , ("unveil: access outside the rules is denied", unveilEnforcementTest)
     , ("priv: account resolution", accountResolutionTest)
     , ("priv: dropPrivileges fully drops identity (root)", dropPrivilegesTest)
