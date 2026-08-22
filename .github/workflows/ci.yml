@@ -30,6 +30,7 @@ jobs:
         uses: vmactions/openbsd-vm@e6c68b637a12e83519688d115d57d5b0b53923cd  # v1.4.6
         with:
           release: "7.9"
+          sync-time: true
           copyback: false
           prepare: &vm-prepare |
             set -eu
