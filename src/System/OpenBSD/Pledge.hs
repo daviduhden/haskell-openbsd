@@ -1,5 +1,3 @@
-{-# LANGUAGE CPP #-}
-
 -- |
 -- Module      : System.OpenBSD.Pledge
 -- Description : OpenBSD pledge(2): restrict system operations
@@ -9,10 +7,17 @@
 -- process with an uncatchable @SIGABRT@ if it uses operations outside
 -- the declared set.
 --
--- Calls to 'pledge' and friends are monotonic: each call may only
--- /reduce/ the set of available promises.  Attempts to increase
--- permissions fail with an @EPERM@ 'IOError' (unless the @error@
--- promise is active, in which case the increase is silently ignored).
+-- Every call is /monotonic/: it may only reduce the set of available
+-- promises.  Attempts to increase permissions fail with an @EPERM@
+-- 'System.IO.Error.IOError' (unless the 'Error' promise is active, in
+-- which case the increase is silently ignored).  Once revoked, a
+-- promise can never be regained; there is deliberately no bracket
+-- combinator in this module, because the restriction cannot be
+-- undone.
+--
+-- These operations change process-wide security state and should
+-- normally be performed before arbitrary concurrent application work
+-- begins.
 module System.OpenBSD.Pledge
     ( -- * Promises
       Promise(..)
@@ -22,26 +27,12 @@ module System.OpenBSD.Pledge
       -- * Restricting future children (exec promises)
     , pledgeChild
     , pledgeBoth
-      -- * Faithful interface
-    , pledgeRaw
+      -- * Full control over both parts of pledge(2)
+    , pledgeParts
     ) where
 
-import Control.Monad (when)
-import Foreign.C.Error (throwErrno)
-import Foreign.C.String (CString, withCString)
-import Foreign.C.Types (CInt(..))
-import Foreign.Ptr (nullPtr)
-
-#if defined(openbsd_HOST_OS)
-
-foreign import ccall unsafe "unistd.h pledge"
-    c_pledge :: CString -> CString -> IO CInt
-
-#else
-
-#error "The openbsd package requires OpenBSD: pledge(2) is an OpenBSD-only system call."
-
-#endif
+import Foreign.C.Error (throwErrnoIfMinus1_)
+import System.OpenBSD.Internal (c_pledge, withMaybeCString)
 
 -- | A pledge promise, i.e. a subsystem of system operations that may be
 -- requested in a call to @pledge(2)@.
@@ -51,6 +42,9 @@ foreign import ccall unsafe "unistd.h pledge"
 -- The @\"tmppath\"@ promise is deliberately /not/ represented: it was
 -- removed from OpenBSD, and using it causes @pledge(2)@ to fail with
 -- @EINVAL@.
+--
+-- The 'Show' instance is derived and renders Haskell constructor
+-- names; use 'promiseName' for native serialization.
 data Promise
     = Audio      -- ^ audio(4) device @ioctl@ operations
     | Bpf        -- ^ bpf(4) statistics collection (@BIOCGSTATS@)
@@ -87,11 +81,9 @@ data Promise
     | Vmm        -- ^ vmm(4) @ioctl@ operations
     | Wpath      -- ^ write filesystem operations
     | Wroute     -- ^ change the routing table
-    deriving (Eq, Ord, Enum, Bounded, Show, Read)
+    deriving (Eq, Ord, Enum, Bounded, Show)
 
 -- | The string name of a promise, exactly as accepted by @pledge(2)@.
--- The 'Show' instance is derived and must not be used for
--- serialization.
 promiseName :: Promise -> String
 promiseName Audio     = "audio"
 promiseName Bpf       = "bpf"
@@ -132,45 +124,48 @@ promiseName Wroute    = "wroute"
 promiseList :: [Promise] -> String
 promiseList = unwords . map promiseName
 
-withMaybeCString :: Maybe String -> (CString -> IO a) -> IO a
-withMaybeCString Nothing  action = action nullPtr
-withMaybeCString (Just s) action = withCString s action
-
--- | Restrict the calling process to the given promises.
+-- | Restrict the calling process to the given promises, as
+-- @pledge(promises, NULL)@.
 --
--- This sets the /current/ promises of the process.  Once a promise has
--- been revoked it cannot be regained: subsequent calls may only reduce
--- the set further, and an attempt to increase it fails with an @EPERM@
--- 'IOError'.
+-- This sets the /current/ promises of the process.  Once a promise
+-- has been revoked it cannot be regained: subsequent calls may only
+-- reduce the set further, and an attempt to increase it fails with an
+-- @EPERM@ 'System.IO.Error.IOError'.  The restriction cannot be
+-- undone, not even by re-executing the process.
 pledge :: [Promise] -> IO ()
-pledge promises = pledgeRaw (Just promises) Nothing
+pledge promises = pledgeParts (Just promises) Nothing
 
--- | Restrict future child processes, executed with @execve(2)@, to the
--- given promises.
+-- | Restrict future child processes, executed with @execve(2)@, to
+-- the given promises, as @pledge(NULL, execpromises)@.
 --
 -- This sets the /exec/ promises: any future program executed by this
--- process starts with exactly these promises (unless the executed file
--- has setuid\/setgid bits, in which case execution is blocked with
--- @EACCES@).  The current process is unaffected.
+-- process starts with exactly these promises (unless the executed
+-- file has setuid\/setgid bits, in which case execution is blocked
+-- with @EACCES@).  The current process is unaffected.
 pledgeChild :: [Promise] -> IO ()
-pledgeChild promises = pledgeRaw Nothing (Just promises)
+pledgeChild promises = pledgeParts Nothing (Just promises)
 
 -- | Restrict both the current process and future children in a single
--- @pledge(2)@ call.
+-- @pledge(2)@ call, as @pledge(promises, execpromises)@.
 pledgeBoth :: [Promise] -> [Promise] -> IO ()
 pledgeBoth promises execPromises =
-    pledgeRaw (Just promises) (Just execPromises)
+    pledgeParts (Just promises) (Just execPromises)
 
--- | The faithful interface to @pledge(promises, execpromises)@.
+-- | The full typed interface to @pledge(promises, execpromises)@.
 --
--- 'Nothing' maps to @NULL@, which means \"do not change this value\".
--- @'Just' []@ maps to the empty string @\"\"@, which restricts the
--- process to the @_exit(2)@ system call.  @'Just' ps@ sets the
--- promises to @ps@.  The first argument is the promises and the second
--- the exec promises of @pledge(2)@, respectively.
-pledgeRaw :: Maybe [Promise] -> Maybe [Promise] -> IO ()
-pledgeRaw promises execPromises =
+-- The two arguments are the promises and the exec promises of
+-- @pledge(2)@, respectively:
+--
+-- * 'Nothing' maps to @NULL@: do not change this value;
+-- * @'Just' []@ maps to the empty string @\"\"@: restrict this value
+--   to nothing (an empty promise set allows only @_exit(2)@);
+-- * @'Just' ps@ sets this value to @ps@.
+--
+-- Both parts are changed in a single native call, so current and exec
+-- promises can be restricted atomically.
+pledgeParts :: Maybe [Promise] -> Maybe [Promise] -> IO ()
+pledgeParts promises execPromises =
     withMaybeCString (promiseList <$> promises) $ \cPromises ->
-    withMaybeCString (promiseList <$> execPromises) $ \cExecPromises -> do
-        result <- c_pledge cPromises cExecPromises
-        when (result /= 0) $ throwErrno "pledge"
+    withMaybeCString (promiseList <$> execPromises) $ \cExecPromises ->
+        throwErrnoIfMinus1_ "pledge" $
+            c_pledge cPromises cExecPromises
