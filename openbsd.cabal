@@ -1,6 +1,6 @@
 cabal-version:      2.4
 name:               openbsd
-version:            2.1.0
+version:            2.2.0
 synopsis:           OpenBSD security facilities: pledge(2), unveil(2), privilege dropping
 description:
     Haskell bindings for the OpenBSD-specific security interfaces and
@@ -10,6 +10,12 @@ description:
     * unveil(2): restrict the filesystem view of a process
     * privilege dropping: the setgroups(2) / setresgid(2) /
       setresuid(2) sequence used by OpenBSD base-system daemons
+    * chroot(2): change the filesystem root
+    * issetugid(2) execution-state detection and getpeereid(3)
+      Unix-domain peer credentials
+    * setproctitle(3) with format-string injection prevention
+    * the arc4random(3) random-number family
+    * daemonization using runtime-safe process primitives
     .
     The package can only be built and used on OpenBSD.
 category:           System
@@ -32,12 +38,18 @@ library
         System.OpenBSD.Pledge
         System.OpenBSD.Unveil
         System.OpenBSD.Privileges
+        System.OpenBSD.Chroot
+        System.OpenBSD.Credentials
+        System.OpenBSD.Process
+        System.OpenBSD.Random
     other-modules:
         System.OpenBSD.Internal
     hs-source-dirs:   src
+    c-sources:        cbits/openbsd.c
     build-depends:
-        base >= 4.11 && < 5,
-        unix  >= 2.7  && < 2.9
+        base       >= 4.11  && < 5,
+        unix       >= 2.7   && < 2.9,
+        bytestring >= 0.10  && < 0.13
     default-language: Haskell2010
     ghc-options:
         -Wall
@@ -54,6 +66,10 @@ test-suite openbsd-tests
     build-depends:
         base,
         unix,
+        bytestring,
+        directory,
         openbsd
     default-language: Haskell2010
-    ghc-options:      -Wall
+    ghc-options:
+        -Wall
+        -threaded
