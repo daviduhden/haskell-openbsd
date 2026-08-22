@@ -55,7 +55,7 @@ case execution is blocked with `EACCES`.
 
 ### NULL vs empty string
 
-`pledgeRaw` is the faithful interface to
+`pledgeParts` is the full typed interface to
 `int pledge(const char *promises, const char *execpromises)`:
 
 | Argument | Meaning |
@@ -65,7 +65,7 @@ case execution is blocked with `EACCES`.
 | `Just ps` | set this value to `ps` |
 
 `pledge`, `pledgeChild` and `pledgeBoth` are conveniences over
-`pledgeRaw`.
+`pledgeParts`.
 
 ### Notes
 
@@ -138,7 +138,8 @@ main = do
 drops all three UID and GID flavors to those values.  By default it
 replaces the supplementary group list with *only* the primary GID
 (`setgroups(1, &pw_gid)`), which is the restrictive daemon-style
-behavior and never accidentally retains root's supplementary groups.
+behavior and never accidentally retains root's supplementary groups;
+this policy is called `PrimaryGroupOnly`.
 
 `dropPrivilegesWith Initgroups` adopts all supplementary groups of the
 account via `initgroups(3)` instead; this is login-style behavior for
@@ -150,9 +151,13 @@ hides the password database.
 
 After the drop, the library verifies that the real, effective and
 saved UIDs/GIDs and the supplementary groups are the expected values
-and raises an exception otherwise.  Each failing step raises an
-`IOError` carrying the underlying `errno` (typically `EPERM` if the
-process is not root).
+and raises an exception otherwise.  The whole transition runs with
+Haskell asynchronous exceptions masked, so another thread cannot
+interrupt it halfway through.  Each failing step raises an `IOError`
+carrying the underlying `errno` (typically `EPERM` if the process is
+not root); after a partial failure the process may already have
+reduced privileges, so callers must treat the exception as fatal for
+the current process.
 
 ### Why not setusercontext(3)?
 
@@ -238,6 +243,17 @@ serve = pure ()
   aborts the process with an uncatchable `SIGABRT`.
 * `unveil(2)` denials surface later as `EACCES`/`ENOENT` errors at the
   filesystem call site.
+* Strings that cross the FFI boundary (account names, unveil paths)
+  must not contain embedded `NUL` bytes; the library rejects them
+  explicitly instead of letting C string conversion truncate them.
+
+## Out of scope
+
+This package deliberately stays small.  Adjacent OpenBSD facilities
+that are not exposed (and may be added separately later if justified)
+include `chroot(2)`, `issetugid(2)`, `getpeereid(2)`,
+`setproctitle(3)`, `arc4random(3)`, and daemonization helpers.  The
+`unix` package already covers general POSIX functionality.
 
 ## Supported OpenBSD versions
 
@@ -264,32 +280,23 @@ not root.  Some pledge tests expect the child process to die with
 
 ## Continuous integration
 
-GitHub Actions boots a real OpenBSD 7.9 amd64 virtual machine
-(`vmactions/openbsd-vm`) on every push to `main` and every pull
-request and runs the full validation inside it:
+GitHub Actions boots a real OpenBSD 7.9 virtual machine
+(`vmactions/openbsd-vm`), on both amd64 and arm64, for every push to
+`main` and every pull request, and runs the full validation inside
+it:
 
 * installs the native OpenBSD Haskell toolchain (GHC and
   cabal-install) with `pkg_add`;
-* `cabal update`, `cabal build all`, `cabal test all`, `cabal check`
-  and `cabal haddock all`, executed as an unprivileged `builder` user;
+* `cabal update`, `cabal build all`, `cabal test all`, `cabal check`,
+  `cabal haddock all` and `cabal sdist`, executed as an unprivileged
+  `builder` user, and the generated source distribution is itself
+  built and tested;
 * runs the test suite again as `root`, and fails if the
   privilege-dropping tests are skipped or do not pass, so the real,
   effective and saved UID/GID drops and the inability to regain root
   are exercised against the actual kernel.
 
-Only OpenBSD 7.9 on amd64 is exercised in CI.  The workflow
+Only OpenBSD 7.9 is exercised in CI (amd64 and arm64).  The workflow
 configuration itself is statically validated locally with `yamllint
 --strict` and `zizmor` (pedantic persona); every third-party action is
 pinned to a full commit SHA and GitHub token permissions are minimal.
-
-## Compatibility
-
-Version 0.2 changed the API in these ways:
-
-* `TMPPATH` was removed (the promise no longer exists on OpenBSD).
-* `disklabel`, `drm` and `vmm` promises were added.
-* `Permission` constructors are now exported.
-* `unveil` now adds a single rule; `unveilPaths`, `lockUnveil` and
-  `unveilAndLock` replace the old `unsafeUnveil`/`finishUnsafeUnveil`.
-* `pledgeRaw` exposes the full `pledge(promises, execpromises)`
-  interface including `NULL` and empty-string semantics.

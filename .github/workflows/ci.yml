@@ -31,7 +31,7 @@ jobs:
         with:
           release: "7.9"
           copyback: false
-          prepare: |
+          prepare: &vm-prepare |
             set -eu
 
             echo "== VM environment =="
@@ -52,7 +52,7 @@ jobs:
             chown -R builder:builder "$GITHUB_WORKSPACE"
             printf 'permit nopass root as builder\n' > /etc/doas.conf
 
-          run: |
+          run: &vm-run |
             set -eu
             cd "$GITHUB_WORKSPACE"
 
@@ -64,6 +64,14 @@ jobs:
             cabal test all --test-show-details=direct
             cabal check
             cabal haddock all
+            cabal sdist
+            SDIST_TAR=$(ls dist-newstyle/sdist/openbsd-*.tar.gz | head -n 1)
+            rm -rf /tmp/sdist-check
+            mkdir -p /tmp/sdist-check
+            tar -xzf "$SDIST_TAR" -C /tmp/sdist-check
+            cd /tmp/sdist-check/openbsd-2.1.0
+            cabal build all
+            cabal test all --test-show-details=direct
             EOF
             chown builder /tmp/openbsd-build.ksh
             doas -u builder /bin/ksh /tmp/openbsd-build.ksh
@@ -90,3 +98,24 @@ jobs:
                 fi
             done
             echo "Privileged tests executed and passed."
+
+  openbsd-79-arm64:
+    name: OpenBSD 7.9 (arm64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and test on OpenBSD 7.9
+        uses: vmactions/openbsd-vm@e6c68b637a12e83519688d115d57d5b0b53923cd  # v1.4.6
+        with:
+          release: "7.9"
+          arch: aarch64
+          copyback: false
+          prepare: *vm-prepare
+          run: *vm-run
