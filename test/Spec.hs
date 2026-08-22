@@ -21,6 +21,7 @@ module Main (main) where
 import Control.Exception (IOException, SomeException, displayException,
                              evaluate, try)
 import Control.Monad (forM, forM_, unless, void, when)
+import Data.Bits ((.|.))
 import Data.List (isInfixOf, nub)
 import Data.Word (Word8)
 import Foreign.C.Types (CInt(..), CSize(..))
@@ -51,8 +52,7 @@ import System.Timeout (timeout)
 import Foreign.C.Error (throwErrno)
 import Foreign.Marshal.Array (allocaArray, peekArray)
 import Foreign.Marshal.Alloc (free, mallocBytes)
-import Foreign.Ptr (Ptr)
-import Foreign.Ptr (castPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, pokeByteOff)
 import qualified Data.ByteString as BS
 
@@ -68,10 +68,25 @@ foreign import ccall unsafe "unistd.h _exit"
 foreign import ccall unsafe "sys/socket.h socketpair"
     c_socketpair :: CInt -> CInt -> CInt -> Ptr CInt -> IO CInt
 
--- munmap(2) for the mimmutable test: unmap is the strongest
--- documented enforcement point for immutable mappings.
+-- mmap/mprotect/munmap for the mimmutable test, operating on a page
+-- mapped by the test itself.
+foreign import ccall unsafe "sys/mman.h mmap"
+    c_mmap :: Ptr () -> CSize -> CInt -> CInt -> CInt -> CInt -> IO (Ptr ())
+
+foreign import ccall unsafe "sys/mman.h mimmutable"
+    c_mimmutable :: Ptr () -> CSize -> IO CInt
+
+foreign import ccall unsafe "sys/mman.h mprotect"
+    c_mprotect :: Ptr () -> CSize -> CInt -> IO CInt
+
 foreign import ccall unsafe "sys/mman.h munmap"
     c_munmap :: Ptr () -> CSize -> IO CInt
+
+protReadWrite, protRead, mapAnon, mapPrivate :: CInt
+protReadWrite = 3
+protRead = 1
+mapAnon = 0x1000
+mapPrivate = 0x0002
 
 afUnix, sockStream :: CInt
 afUnix = 1
@@ -978,19 +993,27 @@ immutableBytesReadTest = inChild "mimmutable-read" $ do
         peek (castPtr buffer :: Ptr Word8)
     when (before /= after) (fail "content changed after mimmutable")
 
--- | mimmutable blocks future mapping changes: munmap on the region
--- fails, while reads and writes remain allowed.
+-- | mimmutable blocks future protection changes on a page mapped by
+-- the test itself: mprotect to a different protection fails, while
+-- reads and writes remain allowed.
 immutableBytesProtectionTest :: IO Result
 immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
-    bytes <- arc4RandomBytes 4096
-    immutableBytes bytes
-    BS.useAsCStringLen bytes $ \(buffer, _) -> do
-        pokeByteOff (castPtr buffer) 0 (0x42 :: Word8)
-        written <- peek (castPtr buffer :: Ptr Word8)
-        when (written /= 0x42) (fail "write after mimmutable did not stick")
-    unmapped <- BS.useAsCStringLen bytes $ \(buffer, len) ->
-        c_munmap (castPtr buffer) (fromIntegral len)
-    when (unmapped == 0) (fail "munmap succeeded on immutable memory")
+    page <- c_mmap nullPtr 4096 protReadWrite
+        (mapAnon .|. mapPrivate) (-1) 0
+    when (page == nullPtr) (fail "mmap failed")
+    pokeByteOff page 0 (0x7a :: Word8)
+    before <- peek (castPtr page :: Ptr Word8)
+    immutableResult <- c_mimmutable page 4096
+    when (immutableResult /= 0) (fail "mimmutable failed")
+    pokeByteOff page 0 (0x42 :: Word8)
+    written <- peek (castPtr page :: Ptr Word8)
+    when (written /= 0x42) (fail "write after mimmutable did not stick")
+    protected <- c_mprotect page 4096 protRead
+    when (protected == 0)
+        (fail ("mprotect succeeded on immutable memory "
+            ++ "(before: " ++ show before ++ ")"))
+    _ <- c_munmap page 4096
+    pure ()
 
 explicitBzeroTest :: IO Result
 explicitBzeroTest = inChild "explicit-bzero" $ do
