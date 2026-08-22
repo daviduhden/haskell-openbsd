@@ -672,26 +672,39 @@ issetugidPlainExecTest = do
         Right s -> expect (s == "0\n")
             ("plain exec reported taint, got: " ++ show s)
 
--- | A set-ID exec must taint the process: the kernel sets the flag
--- whenever the executed file carries the set-ID bits.
+-- | The kernel sets PS_SUGIDEXEC either when the executed file
+-- carries set-ID bits or when the exec happens with mismatched real
+-- and effective IDs.  This test uses the mismatched-ID path: it does
+-- not depend on the filesystem honoring set-ID bits, which varies by
+-- environment, and exercises the same taint mechanism.
 issetugidSuidExecTest :: IO Result
 issetugidSuidExecTest = requireRoot $ do
     probe <- issetugidProbeFixture
-    rootEntry <- getUserEntryForName "root"
-    let suidMode :: FileMode
-        suidMode = foldl1 unionFileModes
-            [ ownerReadMode, ownerWriteMode, ownerExecuteMode
-            , groupReadMode, groupExecuteMode
-            , otherReadMode, otherExecuteMode
-            , setUserIDMode ]
-    setOwnerAndGroup probe (userID rootEntry) (userGroupID rootEntry)
-    setFileMode probe suidMode
-    output <- captureOutput probe []
+    nobody <- accountByName "nobody"
+    let uid = accountUid nobody
+    (readFd, writeFd) <- createPipe
+    child <- forkProcess $ do
+        closeFd readFd
+        _ <- dupTo writeFd stdOutput
+        closeFd writeFd
+        setResUserID (Just 0) (Just uid) Nothing
+        _ <- executeFile probe True [] Nothing
+        _ <- exitImmediately (ExitFailure 127)
+        pure ()
+    closeFd writeFd
+    output <- timeout 60000000 $ do
+        h <- fdToHandle readFd
+        hSetBinaryMode h True
+        captured <- hGetContents h
+        _ <- evaluate (length captured)
+        pure captured
+    _ <- getProcessStatus True False child
+    closeFd readFd
     removeFile probe
     case output of
-        Left e -> pure (Fail ("probe failed: " ++ e))
-        Right s -> expect (s == "1\n")
-            ("set-ID exec not detected, got: " ++ show s)
+        Just "1\n" -> pure Pass
+        Just other -> pure (Fail ("set-ID exec not detected, got: " ++ show other))
+        Nothing -> pure (Fail "probe timed out")
 
 getpeereidTest :: IO Result
 getpeereidTest = inChild "getpeereid" $ do
