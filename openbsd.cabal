@@ -25,6 +25,7 @@ license:            BSD-3-Clause
 license-file:       LICENSE
 author:             James Hobson, David Uhden Collado
 maintainer:         David Uhden Collado
+tested-with:        GHC == 9.10.*
 extra-doc-files:
     README.md
 
@@ -53,12 +54,13 @@ library
         System.OpenBSD.Internal
     hs-source-dirs:   src
     c-sources:        cbits/openbsd.c
+    cc-options:       -std=c23
     extra-libraries:  util
     build-depends:
-        base       >= 4.11  && < 5,
+        base       >= 4.20  && < 5,
         unix       >= 2.7   && < 2.9,
         bytestring >= 0.10  && < 0.13
-    default-language: Haskell2010
+    default-language: GHC2024
     ghc-options:
         -Wall
         -Wcompat
@@ -66,6 +68,7 @@ library
         -Wredundant-constraints
         -Wincomplete-uni-patterns
         -Wincomplete-record-updates
+        -Wmissing-export-lists
 
 test-suite openbsd-tests
     type:             exitcode-stdio-1.0
@@ -77,7 +80,7 @@ test-suite openbsd-tests
         bytestring,
         directory,
         openbsd
-    default-language: Haskell2010
+    default-language: GHC2024
     ghc-options:
         -Wall
         -threaded
