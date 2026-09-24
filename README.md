@@ -452,7 +452,27 @@ OpenBSD-current.
   `drm` and `vmm` included.
 * Unveil permissions verified against `sys/kern/kern_unveil.c`:
   `r`, `w`, `x`, `c`, with the empty permission set valid.
-* Built and tested with GHC 9.10 / Cabal 3.x as shipped on OpenBSD.
+* Built and tested with GHC 9.10.3 / Cabal 3.16 as shipped on OpenBSD.
+
+### Language standards
+
+Both language baselines are declared explicitly in `openbsd.cabal`, so
+the build does not depend on the compiler defaults:
+
+* **Haskell: GHC2024.**  Every Haskell component uses
+  `default-language: GHC2024`.  GHC2024 was introduced in GHC 9.10.1,
+  so GHC 9.10 is the minimum supported compiler and the package
+  declares `base >= 4.20`.  Modules declare only the extensions that
+  GHC2024 does not provide (the C preprocessor, and
+  `OverloadedStrings` in the test suite).
+* **C: ISO C23.**  The packaged C shim is built with
+  `cc-options: -std=c23`, and the test suite compiles its C fixtures
+  with `-std=c23` as well.  OpenBSD 7.9 ships Clang 19.1.7, which
+  accepts the definitive `-std=c23` spelling.  Only ISO C23 is
+  requested, with no GNU dialect; platform interfaces (POSIX, BSD,
+  OpenBSD) remain available because OpenBSD exposes them independently
+  of the ISO C standard.  The C shim's prototypes and the Haskell FFI
+  types are unchanged.
 
 ## Testing
 
@@ -473,8 +493,11 @@ GitHub Actions boots a real OpenBSD 7.9 virtual machine
 `main` and every pull request, and runs the full validation inside
 it:
 
-* installs the native OpenBSD Haskell toolchain (GHC and
-  cabal-install) with `pkg_add`;
+* installs the native OpenBSD Haskell toolchain (GHC 9.10, the first
+  release with GHC2024, and cabal-install) with `pkg_add`;
+* checks that the native C compiler accepts `-std=c23`, so the C23
+  baseline is validated against the real OpenBSD toolchain rather than
+  assumed;
 * `cabal update`, `cabal build all`, `cabal test all`, `cabal check`
   and `cabal sdist`, executed as an unprivileged `builder` user, and
   the generated source distribution is itself built and tested;

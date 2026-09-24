@@ -46,6 +46,16 @@ jobs:
             echo "== Toolchain versions =="
             ghc --version
             cabal --version
+            cc --version
+
+            # The package declares the C23 baseline explicitly; fail
+            # fast if the native compiler cannot honour it.  Only
+            # OpenBSD 7.9 is exercised (amd64 and arm64), and it ships
+            # GHC 9.10, the first release with GHC2024.
+            echo "== Checking the C23 baseline =="
+            echo 'int main(void) { return 0; }' > /tmp/c23-probe.c
+            cc -std=c23 -Wall -Wextra -Werror -o /tmp/c23-probe /tmp/c23-probe.c
+            /tmp/c23-probe
 
             echo "== Creating unprivileged build user =="
             groupadd builder
