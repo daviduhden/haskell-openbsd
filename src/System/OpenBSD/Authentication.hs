@@ -26,6 +26,7 @@ module System.OpenBSD.Authentication
     , bcryptPbkdf
     ) where
 
+import Control.Exception (bracket)
 import Control.Monad (when)
 import Data.ByteString (ByteString, empty, packCString, packCStringLen)
 import qualified Data.ByteString as BS
@@ -99,20 +100,16 @@ bcryptPbkdf :: ByteString -> ByteString -> Word32 -> Int -> IO ByteString
 bcryptPbkdf password salt rounds keyLen
     | keyLen < 0 = ioError (userError "bcryptPbkdf: negative key length")
     | keyLen == 0 = pure empty
-    | otherwise = do
-        keyBuffer <- mallocBytes keyLen
+    | otherwise = bracket (mallocBytes keyLen) free $ \keyBuffer -> do
         result <- BS.useAsCStringLen password $ \(passPtr, passLen) ->
                   BS.useAsCStringLen salt $ \(saltPtr, saltLen) ->
                       c_bcrypt_pbkdf
                           (castPtr passPtr) (fromIntegral passLen)
                           (castPtr saltPtr) (fromIntegral saltLen)
                           keyBuffer (fromIntegral keyLen) rounds
-        when (result /= 0) $ do
-            free keyBuffer
+        when (result /= 0) $
             ioError (userError "bcrypt_pbkdf: invalid arguments")
-        key <- packCStringLen (castPtr keyBuffer, keyLen)
-        free keyBuffer
-        pure key
+        packCStringLen (castPtr keyBuffer, keyLen)
 
 -- | Reject embedded NUL bytes in secret byte strings before they
 -- cross a C string boundary, where the native function would
