@@ -14,6 +14,7 @@
  */
 
 #include <signal.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -30,5 +31,5 @@ hs_setproctitle(const char *title)
 void
 hs_resetproctitle(void)
 {
-	setproctitle(NULL);
+	setproctitle(nullptr);
 }

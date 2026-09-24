@@ -1,6 +1,5 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- |
 -- Module      : Main
@@ -34,10 +33,6 @@ import System.IO (BufferMode(..), IOMode(..), hClose, hFlush, hGetContents,
                   hGetLine, hPutChar, hPutStrLn, hSetBuffering,
                   hSetBinaryMode, openFile, stdout)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
-import System.Posix.Files (groupExecuteMode, groupReadMode,
-                           otherExecuteMode, otherReadMode, ownerExecuteMode,
-                           ownerReadMode, ownerWriteMode, setFileMode,
-                           setOwnerAndGroup, setUserIDMode, unionFileModes)
 import System.Posix.Directory (changeWorkingDirectory)
 import System.Posix.IO (closeFd, createPipe, dup, dupTo, fdToHandle,
                         handleToFd, stdError, stdInput, stdOutput)
@@ -45,7 +40,7 @@ import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
                              forkProcess, getProcessGroupID, getProcessID,
                              getProcessStatus)
 import System.Posix.Signals (sigABRT)
-import System.Posix.Types (Fd(..), FileMode)
+import System.Posix.Types (Fd(..))
 import System.Posix.User (getEffectiveGroupID, getEffectiveUserID, getGroups,
                           getUserEntryForName, userGroupID, userID)
 import System.Timeout (timeout)
@@ -231,7 +226,8 @@ issetugidProbeFixture = do
         , "    return 0;"
         , "}"
         ])
-    compiled <- captureOutput "/usr/bin/cc" ["-o", binPath, cPath]
+    compiled <- captureOutput "/usr/bin/cc"
+        ["-std=c23", "-o", binPath, cPath]
     removeFile cPath
     case compiled of
         Left e -> fail ("cc failed: " ++ e)
@@ -356,7 +352,8 @@ compileStaticFixture = compileFixtureWith ["-static"]
 compileFixtureWith :: [String] -> FilePath -> FilePath -> IO ()
 compileFixtureWith flags source output = do
     result <- captureOutput "/usr/bin/cc"
-        (["-Wall", "-Wextra", "-Werror"] ++ flags ++ ["-o", output, source])
+        (["-std=c23", "-Wall", "-Wextra", "-Werror"]
+            ++ flags ++ ["-o", output, source])
     case result of
         Left e -> fail ("cc failed for " ++ source ++ ": " ++ e)
         Right _ -> pure ()

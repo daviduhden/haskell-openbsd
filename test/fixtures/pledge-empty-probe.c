@@ -30,6 +30,7 @@
  *   42  child wait status was neither exit nor signal
  */
 
+#include <stddef.h>
 #include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -46,7 +47,7 @@ enum {
 static void
 child_probe(void)
 {
-	if (pledge("", NULL) == -1)
+	if (pledge("", nullptr) == -1)
 		_exit(PROBE_CHILD_PLEDGE_FAILED);
 	_exit(0);
 }
@@ -97,7 +98,7 @@ main(void)
 
 	/* Direct case: reduce this process to the _exit-only state and
 	 * leave immediately. */
-	if (pledge("", NULL) == -1)
+	if (pledge("", nullptr) == -1)
 		_exit(PROBE_CHILD_PLEDGE_FAILED);
 	_exit(0);
 }
