@@ -1,55 +1,98 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- |
--- Module      : Main
--- Description : Test suite for the openbsd package
---
--- Pure tests (serialization, NUL rejection) run everywhere.  Runtime
--- tests exercise the real kernel interfaces and must run on OpenBSD;
--- tests that require root are skipped cleanly otherwise.
---
--- All runtime tests run in forked child processes so that the test
--- runner itself never loses privileges, changes its filesystem root,
--- or has its authority restricted, and so that no test depends on the
--- execution order of any other test.  The suite is built with
--- @-threaded@ so that daemonization and fork behavior are exercised
--- against the threaded runtime.
+{- |
+Module      : Main
+Description : Test suite for the openbsd package
+
+Pure tests (serialization, NUL rejection) run everywhere.  Runtime
+tests exercise the real kernel interfaces and must run on OpenBSD;
+tests that require root are skipped cleanly otherwise.
+
+All runtime tests run in forked child processes so that the test
+runner itself never loses privileges, changes its filesystem root,
+or has its authority restricted, and so that no test depends on the
+execution order of any other test.  The suite is built with
+@-threaded@ so that daemonization and fork behavior are exercised
+against the threaded runtime.
+-}
 module Main (main) where
 
-import Control.Exception (IOException, SomeException, displayException,
-                             evaluate, try)
+import Control.Exception (
+    IOException,
+    SomeException,
+    displayException,
+    evaluate,
+    try,
+ )
 import Control.Monad (forM, forM_, unless, void, when)
 import Data.Bits ((.|.))
+import Data.ByteString qualified as BS
 import Data.List (isInfixOf, nub)
 import Data.Word (Word8)
-import Foreign.C.Types (CInt(..), CSize(..))
-import System.Directory (createDirectoryIfMissing,
-                         doesDirectoryExist, doesFileExist,
-                         getCurrentDirectory, removeDirectory, removeFile)
-import System.Environment (getArgs)
-import System.Exit (ExitCode(..), exitWith)
-import System.IO (BufferMode(..), IOMode(..), hClose, hFlush, hGetContents,
-                  hGetLine, hPutChar, hPutStrLn, hSetBuffering,
-                  hSetBinaryMode, openFile, stdout)
-import System.IO.Error (isDoesNotExistError, isPermissionError)
-import System.Posix.Directory (changeWorkingDirectory)
-import System.Posix.IO (closeFd, createPipe, dup, dupTo, fdToHandle,
-                        handleToFd, stdError, stdInput, stdOutput)
-import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
-                             forkProcess, getProcessGroupID, getProcessID,
-                             getProcessStatus)
-import System.Posix.Signals (sigABRT)
-import System.Posix.Types (COff(..), Fd(..))
-import System.Posix.User (getEffectiveGroupID, getEffectiveUserID, getGroups,
-                          getUserEntryForName, userGroupID, userID)
-import System.Timeout (timeout)
 import Foreign.C.Error (throwErrno)
-import Foreign.Marshal.Array (allocaArray, peekArray)
+import Foreign.C.Types (CInt (..), CSize (..))
 import Foreign.Marshal.Alloc (free, mallocBytes)
+import Foreign.Marshal.Array (allocaArray, peekArray)
 import Foreign.Ptr (Ptr, castPtr, intPtrToPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, pokeByteOff)
-import qualified Data.ByteString as BS
+import System.Directory (
+    createDirectoryIfMissing,
+    doesDirectoryExist,
+    doesFileExist,
+    getCurrentDirectory,
+    removeDirectory,
+    removeFile,
+ )
+import System.Environment (getArgs)
+import System.Exit (ExitCode (..), exitWith)
+import System.IO (
+    BufferMode (..),
+    IOMode (..),
+    hClose,
+    hFlush,
+    hGetContents,
+    hGetLine,
+    hPutChar,
+    hPutStrLn,
+    hSetBinaryMode,
+    hSetBuffering,
+    openFile,
+    stdout,
+ )
+import System.IO.Error (isDoesNotExistError, isPermissionError)
+import System.Posix.Directory (changeWorkingDirectory)
+import System.Posix.IO (
+    closeFd,
+    createPipe,
+    dup,
+    dupTo,
+    fdToHandle,
+    handleToFd,
+    stdError,
+    stdInput,
+    stdOutput,
+ )
+import System.Posix.Process (
+    ProcessStatus (..),
+    executeFile,
+    exitImmediately,
+    forkProcess,
+    getProcessGroupID,
+    getProcessID,
+    getProcessStatus,
+ )
+import System.Posix.Signals (sigABRT)
+import System.Posix.Types (COff (..), Fd (..))
+import System.Posix.User (
+    getEffectiveGroupID,
+    getEffectiveUserID,
+    getGroups,
+    getUserEntryForName,
+    userGroupID,
+    userID,
+ )
+import System.Timeout (timeout)
 
 import System.OpenBSD
 
@@ -122,10 +165,11 @@ runTests = go True
             Right (Fail reason) ->
                 putStrLn ("FAIL " ++ name ++ ": " ++ reason) >> go False rest
 
--- | Run an action in a forked child process.  The child reports
--- success via its exit status; failures carry a message in a log file
--- or, if the log file cannot be written (for example because the
--- child has restricted its filesystem view), on stderr.
+{- | Run an action in a forked child process.  The child reports
+success via its exit status; failures carry a message in a log file
+or, if the log file cannot be written (for example because the
+child has restricted its filesystem view), on stderr.
+-}
 inChild :: String -> IO () -> IO Result
 inChild label action = do
     pid <- getProcessID
@@ -154,8 +198,9 @@ inChild label action = do
             pure (Fail ("child was terminated by signal " ++ show signal))
         _ -> pure (Fail "child vanished")
 
--- | Run an action in a forked child process that is expected to die
--- from the given signal.
+{- | Run an action in a forked child process that is expected to die
+from the given signal.
+-}
 expectSignal :: CInt -> IO () -> IO Result
 expectSignal expected action = do
     child <- forkProcess $ do
@@ -167,8 +212,15 @@ expectSignal expected action = do
     case status of
         Just (Terminated signal _)
             | signal == expected -> pure Pass
-            | otherwise -> pure (Fail ("expected signal " ++ show expected
-                ++ ", got " ++ show signal))
+            | otherwise ->
+                pure
+                    ( Fail
+                        ( "expected signal "
+                            ++ show expected
+                            ++ ", got "
+                            ++ show signal
+                        )
+                    )
         Just (Exited ExitSuccess) ->
             pure (Fail "child exited normally, expected a signal")
         Just (Exited (ExitFailure code)) ->
@@ -210,25 +262,31 @@ requireRoot action = do
         then action
         else pure (Skip "requires root privileges")
 
--- | Build a tiny C probe that prints issetugid(2), using the
--- base-system compiler.  This avoids depending on how the test
--- executable was invoked (argv[0] is not reliable under cabal test).
+{- | Build a tiny C probe that prints issetugid(2), using the
+base-system compiler.  This avoids depending on how the test
+executable was invoked (argv[0] is not reliable under cabal test).
+-}
 issetugidProbeFixture :: IO FilePath
 issetugidProbeFixture = do
     let cPath = "/tmp/openbsd-issetugid-probe.c"
         binPath = "/tmp/openbsd-issetugid-probe"
-    writeFile cPath (unlines
-        [ "#include <stdio.h>"
-        , "#include <unistd.h>"
-        , "int"
-        , "main(void)"
-        , "{"
-        , "    printf(\"%d\\n\", issetugid());"
-        , "    return 0;"
-        , "}"
-        ])
-    compiled <- captureOutput "/usr/bin/cc"
-        ["-std=c23", "-o", binPath, cPath]
+    writeFile
+        cPath
+        ( unlines
+            [ "#include <stdio.h>"
+            , "#include <unistd.h>"
+            , "int"
+            , "main(void)"
+            , "{"
+            , "    printf(\"%d\\n\", issetugid());"
+            , "    return 0;"
+            , "}"
+            ]
+        )
+    compiled <-
+        captureOutput
+            "/usr/bin/cc"
+            ["-std=c23", "-o", binPath, cPath]
     removeFile cPath
     case compiled of
         Left e -> fail ("cc failed: " ++ e)
@@ -241,95 +299,169 @@ promiseNamesTest :: IO Result
 promiseNamesTest = do
     let names = map promiseName [minBound .. maxBound :: Promise]
         expected =
-            [ "audio", "bpf", "chown", "cpath", "disklabel", "dns", "dpath"
-            , "drm", "error", "exec", "fattr", "flock", "getpw", "id", "inet"
-            , "mcast", "pf", "proc", "prot_exec", "ps", "recvfd", "route"
-            , "rpath", "sendfd", "settime", "stdio", "tape", "tty", "unix"
-            , "unveil", "video", "vminfo", "vmm", "wpath", "wroute"
+            [ "audio"
+            , "bpf"
+            , "chown"
+            , "cpath"
+            , "disklabel"
+            , "dns"
+            , "dpath"
+            , "drm"
+            , "error"
+            , "exec"
+            , "fattr"
+            , "flock"
+            , "getpw"
+            , "id"
+            , "inet"
+            , "mcast"
+            , "pf"
+            , "proc"
+            , "prot_exec"
+            , "ps"
+            , "recvfd"
+            , "route"
+            , "rpath"
+            , "sendfd"
+            , "settime"
+            , "stdio"
+            , "tape"
+            , "tty"
+            , "unix"
+            , "unveil"
+            , "video"
+            , "vminfo"
+            , "vmm"
+            , "wpath"
+            , "wroute"
             ]
-    expect (names == expected && length (nub names) == length names
-            && all (not . any (== ' ')) names)
+    expect
+        ( names == expected
+            && length (nub names) == length names
+            && all (not . any (== ' ')) names
+        )
         ("promise serialization mismatch: " ++ show names)
 
 promiseFromNameTest :: IO Result
 promiseFromNameTest =
-    expect (and [promiseFromName (promiseName promise) == Just promise
-                | promise <- [minBound .. maxBound :: Promise]]
+    expect
+        ( and
+            [ promiseFromName (promiseName promise) == Just promise
+            | promise <- [minBound .. maxBound :: Promise]
+            ]
             && promiseFromName "tmppath" == Nothing
             && promiseFromName "" == Nothing
-            && promiseFromName "bogus" == Nothing)
+            && promiseFromName "bogus" == Nothing
+        )
         "promiseFromName round-trip mismatch"
 
 unveilPermissionsTest :: IO Result
 unveilPermissionsTest =
-    expect (permissionString [] == ""
+    expect
+        ( permissionString [] == ""
             && permissionString [Read, Write, Execute, Create] == "rwxc"
-            && permissionString [Create, Read] == "cr")
+            && permissionString [Create, Read] == "cr"
+        )
         "permission serialization mismatch"
 
 -- Input validation tests (no kernel state involved)
 
 nulRejectionTests :: [(String, IO Result)]
 nulRejectionTests =
-    [ ( "unveil: rejects embedded NUL bytes in paths"
-      , expectIOError "unveil NUL" (unveil "/tmp\0etc" [Read]) )
-    , ( "priv: rejects embedded NUL bytes in account names"
-      , expectIOError "accountByName NUL" (accountByName "nobody\0root") )
-    , ( "priv: rejects embedded NUL bytes in dropPrivileges"
-      , expectIOError "dropPrivileges NUL" (dropPrivileges "nobody\0root") )
-    , ( "priv: rejects embedded NUL bytes in initGroups"
-      , expectIOError "initGroups NUL" (initGroups "nobody\0root" 0) )
-    , ( "chroot: rejects embedded NUL bytes in paths"
-      , expectIOError "chroot NUL" (chroot "/tmp\0etc") )
-    , ( "chroot: enterChroot rejects embedded NUL bytes"
-      , expectIOError "enterChroot NUL" (enterChroot "/tmp\0etc") )
-    , ( "proc: rejects embedded NUL bytes in process titles"
-      , expectIOError "setProcessTitle NUL" (setProcessTitle "a\0b") )
-    , ( "random: rejects negative buffer lengths"
-      , expectIOError "arc4RandomBytes negative" (arc4RandomBytes (-1)) )
-    , ( "proc: forkExec rejects embedded NUL bytes"
-      , expectIOError "forkExec NUL" (forkExec "/tmp\0x" False [] Nothing) )
-    , ( "proc: forkExecPledged rejects embedded NUL bytes"
-      , expectIOError "forkExecPledged NUL" (forkExecPledged [Stdio] "/tmp\0x" False [] Nothing) )
-    , ( "proc: execPledged rejects embedded NUL bytes"
-      , expectIOError "execPledged NUL" (execPledged [Stdio] "/tmp\0x" False [] Nothing) )
-    , ( "proc: setProgramName rejects embedded NUL bytes"
-      , expectIOError "setProgramName NUL" (setProgramName "a\0b") )
-    , ( "random: getEntropy rejects lengths above 256"
-      , expectIOError "getEntropy long" (getEntropy 257) )
-    , ( "random: getEntropy rejects negative lengths"
-      , expectIOError "getEntropy negative" (getEntropy (-1)) )
-    , ( "auth: cryptCheckpass rejects embedded NUL bytes"
-      , expectIOError "cryptCheckpass NUL" (cryptCheckpass (BS.pack [0]) "hash") )
-    , ( "auth: cryptNewhash rejects embedded NUL bytes"
-      , expectIOError "cryptNewhash NUL" (cryptNewhash (BS.pack [0]) "bcrypt,4") )
-    , ( "auth: bcryptPbkdf rejects negative key lengths"
-      , expectIOError "bcryptPbkdf negative" (bcryptPbkdf "p" "s" 4 (-1)) )
+    [
+        ( "unveil: rejects embedded NUL bytes in paths"
+        , expectIOError "unveil NUL" (unveil "/tmp\0etc" [Read])
+        )
+    ,
+        ( "priv: rejects embedded NUL bytes in account names"
+        , expectIOError "accountByName NUL" (accountByName "nobody\0root")
+        )
+    ,
+        ( "priv: rejects embedded NUL bytes in dropPrivileges"
+        , expectIOError "dropPrivileges NUL" (dropPrivileges "nobody\0root")
+        )
+    ,
+        ( "priv: rejects embedded NUL bytes in initGroups"
+        , expectIOError "initGroups NUL" (initGroups "nobody\0root" 0)
+        )
+    ,
+        ( "chroot: rejects embedded NUL bytes in paths"
+        , expectIOError "chroot NUL" (chroot "/tmp\0etc")
+        )
+    ,
+        ( "chroot: enterChroot rejects embedded NUL bytes"
+        , expectIOError "enterChroot NUL" (enterChroot "/tmp\0etc")
+        )
+    ,
+        ( "proc: rejects embedded NUL bytes in process titles"
+        , expectIOError "setProcessTitle NUL" (setProcessTitle "a\0b")
+        )
+    ,
+        ( "random: rejects negative buffer lengths"
+        , expectIOError "arc4RandomBytes negative" (arc4RandomBytes (-1))
+        )
+    ,
+        ( "proc: forkExec rejects embedded NUL bytes"
+        , expectIOError "forkExec NUL" (forkExec "/tmp\0x" False [] Nothing)
+        )
+    ,
+        ( "proc: forkExecPledged rejects embedded NUL bytes"
+        , expectIOError "forkExecPledged NUL" (forkExecPledged [Stdio] "/tmp\0x" False [] Nothing)
+        )
+    ,
+        ( "proc: execPledged rejects embedded NUL bytes"
+        , expectIOError "execPledged NUL" (execPledged [Stdio] "/tmp\0x" False [] Nothing)
+        )
+    ,
+        ( "proc: setProgramName rejects embedded NUL bytes"
+        , expectIOError "setProgramName NUL" (setProgramName "a\0b")
+        )
+    ,
+        ( "random: getEntropy rejects lengths above 256"
+        , expectIOError "getEntropy long" (getEntropy 257)
+        )
+    ,
+        ( "random: getEntropy rejects negative lengths"
+        , expectIOError "getEntropy negative" (getEntropy (-1))
+        )
+    ,
+        ( "auth: cryptCheckpass rejects embedded NUL bytes"
+        , expectIOError "cryptCheckpass NUL" (cryptCheckpass (BS.pack [0]) "hash")
+        )
+    ,
+        ( "auth: cryptNewhash rejects embedded NUL bytes"
+        , expectIOError "cryptNewhash NUL" (cryptNewhash (BS.pack [0]) "bcrypt,4")
+        )
+    ,
+        ( "auth: bcryptPbkdf rejects negative key lengths"
+        , expectIOError "bcryptPbkdf negative" (bcryptPbkdf "p" "s" 4 (-1))
+        )
     ]
 
 -- pledge tests
 
--- | The @_exit(2)@-only pledge state is valid OpenBSD and is
--- verified by a standalone C probe (test\/fixtures\/pledge-empty-probe.c)
--- that performs the complete operation with native @fork(2)@:
---
--- > fork -> child: pledge("", NULL) -> _exit(0)
--- > parent: waitpid, strict exit-vs-signal inspection
---
--- plus the direct non-forked @pledge("") -> _exit(0)@ case.  The
--- probe distinguishes normal exit, SIGABRT and other signals,
--- pledge failure and waitpid failure with distinct exit statuses.
---
--- It is intentionally NOT tested by calling @pledge("")@ from a
--- 'forkProcess' child under the threaded GHC RTS: reducing the
--- current promise set to the empty state makes the kernel unwind
--- sibling runtime threads while cleaning up the now-inaccessible
--- unveil state, and the resumed threads then perform syscalls
--- forbidden by the empty promise set, so the kernel aborts the
--- process.  (A call that only configures execpromises does not take
--- that path.)  This is an interaction between the kernel's thread
--- handling during extreme current-process reduction and the runtime
--- environment, not a defect of pledge(2) or of this binding.
+{- | The @_exit(2)@-only pledge state is valid OpenBSD and is
+verified by a standalone C probe (test\/fixtures\/pledge-empty-probe.c)
+that performs the complete operation with native @fork(2)@:
+
+> fork -> child: pledge("", NULL) -> _exit(0)
+> parent: waitpid, strict exit-vs-signal inspection
+
+plus the direct non-forked @pledge("") -> _exit(0)@ case.  The
+probe distinguishes normal exit, SIGABRT and other signals,
+pledge failure and waitpid failure with distinct exit statuses.
+
+It is intentionally NOT tested by calling @pledge("")@ from a
+'forkProcess' child under the threaded GHC RTS: reducing the
+current promise set to the empty state makes the kernel unwind
+sibling runtime threads while cleaning up the now-inaccessible
+unveil state, and the resumed threads then perform syscalls
+forbidden by the empty promise set, so the kernel aborts the
+process.  (A call that only configures execpromises does not take
+that path.)  This is an interaction between the kernel's thread
+handling during extreme current-process reduction and the runtime
+environment, not a defect of pledge(2) or of this binding.
+-}
 pledgeEmptyTest :: IO Result
 pledgeEmptyTest = do
     let source = "test/fixtures/pledge-empty-probe.c"
@@ -344,25 +476,31 @@ pledgeEmptyTest = do
 compileFixture :: FilePath -> FilePath -> IO ()
 compileFixture = compileFixtureWith []
 
--- | The execpledge target must be static: a dynamically linked
--- executable needs rpath at startup for ld.so, which the stdio exec
--- ceiling forbids.
+{- | The execpledge target must be static: a dynamically linked
+executable needs rpath at startup for ld.so, which the stdio exec
+ceiling forbids.
+-}
 compileStaticFixture :: FilePath -> FilePath -> IO ()
 compileStaticFixture = compileFixtureWith ["-static"]
 
 compileFixtureWith :: [String] -> FilePath -> FilePath -> IO ()
 compileFixtureWith flags source output = do
-    result <- captureOutput "/usr/bin/cc"
-        (["-std=c23", "-Wall", "-Wextra", "-Werror"]
-            ++ flags ++ ["-o", output, source])
+    result <-
+        captureOutput
+            "/usr/bin/cc"
+            ( ["-std=c23", "-Wall", "-Wextra", "-Werror"]
+                ++ flags
+                ++ ["-o", output, source]
+            )
     case result of
         Left e -> fail ("cc failed for " ++ source ++ ": " ++ e)
         Right _ -> pure ()
 
--- | Fork a child that immediately execs @prog@ with @args@,
--- capturing stdout and stderr.  The child performs no pledge call
--- and no other meaningful Haskell work: its only purpose is to reach
--- exec as directly as possible.
+{- | Fork a child that immediately execs @prog@ with @args@,
+capturing stdout and stderr.  The child performs no pledge call
+and no other meaningful Haskell work: its only purpose is to reach
+exec as directly as possible.
+-}
 execCapture :: FilePath -> [String] -> IO (Maybe ProcessStatus, String)
 execCapture prog args = do
     (readFd, writeFd) <- createPipe
@@ -385,18 +523,19 @@ execCapture prog args = do
     status <- getProcessStatus True False child
     pure (status, maybe "" id output)
 
--- | The supported fork architecture under the threaded RTS:
---
--- > parent: pledgeChild [Stdio]  (exec ceiling, parent-side)
--- > parent: still unrestricted    (an rpath-class open succeeds)
--- > forkProcess
--- > child:  executeFile immediately (no pledge call in the child)
--- > new image starts under the inherited execpromises
---
--- OpenBSD copies PS_EXECPLEDGE and ps_execpledge across fork(2) and
--- applies them when the descendant executes a new image, so the
--- parent-side setting survives the fork.  Verified through actual
--- allowed and forbidden operations, not by trusting return values.
+{- | The supported fork architecture under the threaded RTS:
+
+> parent: pledgeChild [Stdio]  (exec ceiling, parent-side)
+> parent: still unrestricted    (an rpath-class open succeeds)
+> forkProcess
+> child:  executeFile immediately (no pledge call in the child)
+> new image starts under the inherited execpromises
+
+OpenBSD copies PS_EXECPLEDGE and ps_execpledge across fork(2) and
+applies them when the descendant executes a new image, so the
+parent-side setting survives the fork.  Verified through actual
+allowed and forbidden operations, not by trusting return values.
+-}
 forkExecPledgeTest :: IO Result
 forkExecPledgeTest = inChild "fork-exec" $ do
     let source = "test/fixtures/execpledge-probe.c"
@@ -422,8 +561,11 @@ forkExecPledgeTest = inChild "fork-exec" $ do
     (forbiddenStatus, _) <- execCapture probe ["violate"]
     case forbiddenStatus of
         Just (Terminated signal _) | signal == sigABRT -> pure ()
-        other -> fail ("expected SIGABRT for the forbidden open, got: "
-            ++ show other)
+        other ->
+            fail
+                ( "expected SIGABRT for the forbidden open, got: "
+                    ++ show other
+                )
 
     removeFile probe
 
@@ -435,9 +577,10 @@ pledgeNullTest = inChild "pledge-null" $ do
     pledgeBoth [Stdio] [Stdio]
     pledgeParts (Just [Stdio]) Nothing
 
--- | pledge(NULL, "") restricts exec promises to the empty set while
--- leaving the current promises unchanged; the process itself must
--- remain functional.
+{- | pledge(NULL, "") restricts exec promises to the empty set while
+leaving the current promises unchanged; the process itself must
+remain functional.
+-}
 pledgeNullExecEmptyTest :: IO Result
 pledgeNullExecEmptyTest = inChild "pledge-null-exec-empty" $ do
     pledge [Stdio]
@@ -480,9 +623,10 @@ unveilLockTest = inChild "unveil-lock" $ do
         Left e -> fail ("expected EPERM after locking, got " ++ displayException e)
         Right () -> fail "unveil succeeded after lockUnveil"
 
--- | unveil(2) resolves non-directory paths with namei in CREATE mode:
--- the final component may legitimately not exist (it is remembered by
--- name).  Only a nonexistent *directory* component fails with ENOENT.
+{- | unveil(2) resolves non-directory paths with namei in CREATE mode:
+the final component may legitimately not exist (it is remembered by
+name).  Only a nonexistent *directory* component fails with ENOENT.
+-}
 unveilNonexistentTest :: IO Result
 unveilNonexistentTest = inChild "unveil-enoent" $ do
     result <- try (unveil "/openbsd-test-dir-that-does-not-exist/file" [Read])
@@ -505,8 +649,9 @@ unveilEnforcementTest = inChild "unveil-enforcement" $ do
         Left (_ :: IOException) -> pure ()
         Right () -> fail "writing /tmp succeeded under unveil / r x"
 
--- | The empty permission set unveils a path but permits no operation
--- on it.
+{- | The empty permission set unveils a path but permits no operation
+on it.
+-}
 unveilEmptyPermissionsTest :: IO Result
 unveilEmptyPermissionsTest = inChild "unveil-empty-permissions" $ do
     unveil "/tmp" []
@@ -577,9 +722,10 @@ dropUnknownUserTest = inChild "privdrop-unknown" $ do
         Left (_ :: IOException) -> pure ()
         Right () -> fail "privileges were dropped to a nonexistent account"
 
--- | Without sufficient privileges the drop must fail early with the
--- native EPERM preserved through the masked transition, instead of
--- silently pretending to succeed.
+{- | Without sufficient privileges the drop must fail early with the
+native EPERM preserved through the masked transition, instead of
+silently pretending to succeed.
+-}
 dropUnprivilegedTest :: IO Result
 dropUnprivilegedTest = inChild "privdrop-eperm" $ do
     account <- accountByName "nobody"
@@ -602,8 +748,9 @@ pledgeIdLifecycleTest = requireRoot $ inChild "pledge-id-lifecycle" $ do
     when (rUid /= (uid, uid, uid)) $
         fail ("identity is wrong after drop: " ++ show rUid)
 
--- | The native -1 semantics: Nothing leaves each ID unchanged, and
--- the no-op call succeeds for any caller.
+{- | The native -1 semantics: Nothing leaves each ID unchanged, and
+the no-op call succeeds for any caller.
+-}
 setResPassthroughTest :: IO Result
 setResPassthroughTest = inChild "setres-passthrough" $ do
     beforeUid <- getResUserID
@@ -617,9 +764,10 @@ setResPassthroughTest = inChild "setres-passthrough" $ do
 
 -- chroot tests
 
--- | Deterministic in both the privileged and unprivileged phases: the
--- child makes itself unprivileged first if necessary, then chroot
--- must fail with EPERM.
+{- | Deterministic in both the privileged and unprivileged phases: the
+child makes itself unprivileged first if necessary, then chroot
+must fail with EPERM.
+-}
 chrootEpermTest :: IO Result
 chrootEpermTest = inChild "chroot-eperm" $ do
     account <- accountByName "nobody"
@@ -658,8 +806,9 @@ issetugidPlainTest = inChild "issetugid-false" $ do
     tainted <- isSetugid
     when tainted (fail "untainted process reports issetugid")
 
--- | A plain exec of a non-set-ID binary must leave the process
--- untainted.
+{- | A plain exec of a non-set-ID binary must leave the process
+untainted.
+-}
 issetugidPlainExecTest :: IO Result
 issetugidPlainExecTest = do
     probe <- issetugidProbeFixture
@@ -667,14 +816,17 @@ issetugidPlainExecTest = do
     removeFile probe
     case output of
         Left e -> pure (Fail ("probe failed: " ++ e))
-        Right s -> expect (s == "0\n")
-            ("plain exec reported taint, got: " ++ show s)
+        Right s ->
+            expect
+                (s == "0\n")
+                ("plain exec reported taint, got: " ++ show s)
 
--- | The kernel sets PS_SUGIDEXEC either when the executed file
--- carries set-ID bits or when the exec happens with mismatched real
--- and effective IDs.  This test uses the mismatched-ID path: it does
--- not depend on the filesystem honoring set-ID bits, which varies by
--- environment, and exercises the same taint mechanism.
+{- | The kernel sets PS_SUGIDEXEC either when the executed file
+carries set-ID bits or when the exec happens with mismatched real
+and effective IDs.  This test uses the mismatched-ID path: it does
+not depend on the filesystem honoring set-ID bits, which varies by
+environment, and exercises the same taint mechanism.
+-}
 issetugidSuidExecTest :: IO Result
 issetugidSuidExecTest = requireRoot $ do
     probe <- issetugidProbeFixture
@@ -713,8 +865,12 @@ getpeereidTest = inChild "getpeereid" $ do
     closeFd a
     closeFd b
     when (uid /= euid || gid /= egid) $
-        fail ("peer credentials mismatch: " ++ show (uid, gid)
-            ++ " vs " ++ show (euid, egid))
+        fail
+            ( "peer credentials mismatch: "
+                ++ show (uid, gid)
+                ++ " vs "
+                ++ show (euid, egid)
+            )
 
 getpeereidBadFdTest :: IO Result
 getpeereidBadFdTest = inChild "getpeereid-badfd" $ do
@@ -814,8 +970,9 @@ arc4randomUniformTest = inChild "arc4random-uniform" $ do
         value <- arc4RandomUniform 1000
         when (value >= 1000) (fail "uniform result out of bounds")
 
--- | The arc4random family must work under pledge stdio: it only
--- requires getentropy(2), which is part of the stdio promise.
+{- | The arc4random family must work under pledge stdio: it only
+requires getentropy(2), which is part of the stdio promise.
+-}
 arc4randomPledgeTest :: IO Result
 arc4randomPledgeTest = inChild "arc4random-pledge" $ do
     pledge [Stdio]
@@ -827,8 +984,9 @@ arc4randomPledgeTest = inChild "arc4random-pledge" $ do
 
 -- exec-helper tests
 
--- | The public forkExec: fork plus immediate exec, no pledge policy
--- involved; the target runs normally.
+{- | The public forkExec: fork plus immediate exec, no pledge policy
+involved; the target runs normally.
+-}
 forkExecTest :: IO Result
 forkExecTest = inChild "fork-exec-plain" $ do
     let source = "test/fixtures/execpledge-probe.c"
@@ -841,9 +999,10 @@ forkExecTest = inChild "fork-exec-plain" $ do
         Just (Exited ExitSuccess) -> pure ()
         other -> fail ("executed target did not exit normally: " ++ show other)
 
--- | The public forkExecPledged: exec promises configured in the
--- caller, inherited across fork, and applied to the new image; the
--- allowed case exits 0 and the forbidden case dies of SIGABRT.
+{- | The public forkExecPledged: exec promises configured in the
+caller, inherited across fork, and applied to the new image; the
+allowed case exits 0 and the forbidden case dies of SIGABRT.
+-}
 forkExecPledgedTest :: IO Result
 forkExecPledgedTest = inChild "fork-exec-pledged" $ do
     let source = "test/fixtures/execpledge-probe.c"
@@ -861,11 +1020,15 @@ forkExecPledgedTest = inChild "fork-exec-pledged" $ do
     removeFile probe
     case forbiddenStatus of
         Just (Terminated signal _) | signal == sigABRT -> pure ()
-        other -> fail ("expected SIGABRT for the forbidden open, got: "
-            ++ show other)
+        other ->
+            fail
+                ( "expected SIGABRT for the forbidden open, got: "
+                    ++ show other
+                )
 
--- | The public execPledged: replace the current image under the given
--- exec promise ceiling.
+{- | The public execPledged: replace the current image under the given
+exec promise ceiling.
+-}
 execPledgedAllowedTest :: IO Result
 execPledgedAllowedTest = inChild "exec-pledged-ok" $ do
     let source = "test/fixtures/execpledge-probe.c"
@@ -882,8 +1045,9 @@ execPledgedViolationTest = expectSignal sigABRT $ do
 
 -- descriptor tests
 
--- | closefrom(2) through a raw fork child: descriptor checks use
--- dup(2) only, since Handle-based I/O is unusable after closefrom.
+{- | closefrom(2) through a raw fork child: descriptor checks use
+dup(2) only, since Handle-based I/O is unusable after closefrom.
+-}
 closeFromTest :: IO Result
 closeFromTest = do
     child <- forkProcess $ do
@@ -898,11 +1062,20 @@ closeFromTest = do
                 okHigh <- checkFdOpen high
                 okStd <- and <$> mapM checkFdOpen [stdInput, stdOutput, stdError]
                 closeFd low
-                c__exit (if okLow && not okMid && not okHigh && okStd then 0
-                         else if not okLow then 11
-                         else if okMid then 12
-                         else if okHigh then 13
-                         else 14)
+                c__exit
+                    ( if okLow && not okMid && not okHigh && okStd
+                        then 0
+                        else
+                            if not okLow
+                                then 11
+                                else
+                                    if okMid
+                                        then 12
+                                        else
+                                            if okHigh
+                                                then 13
+                                                else 14
+                    )
             _ -> c__exit 15
     status <- getProcessStatus True False child
     case status of
@@ -951,11 +1124,12 @@ rtableGetTest = inChild "rtable-get" $ do
     table <- getRtable
     when (unRtable table < 0) (fail "negative rtable id")
 
--- | In the default environment only domain 0 exists: setting it is
--- a no-op, and any other domain fails with EINVAL (the kernel checks
--- rtable_exists).  The EPERM rule for changing a non-zero domain
--- requires a configured domain and root, which this VM does not
--- provide; it is documented and enforced by the kernel.
+{- | In the default environment only domain 0 exists: setting it is
+a no-op, and any other domain fails with EINVAL (the kernel checks
+rtable_exists).  The EPERM rule for changing a non-zero domain
+requires a configured domain and root, which this VM does not
+provide; it is documented and enforced by the kernel.
+-}
 rtableTest :: IO Result
 rtableTest = inChild "rtable" $ do
     current <- getRtable
@@ -1003,13 +1177,20 @@ immutableBytesReadTest = inChild "mimmutable-read" $ do
         peek (castPtr buffer :: Ptr Word8)
     when (before /= after) (fail "content changed after mimmutable")
 
--- | mimmutable blocks future protection changes on a page mapped by
--- the test itself: mprotect to a different protection fails, while
--- reads and writes remain allowed.
+{- | mimmutable blocks future protection changes on a page mapped by
+the test itself: mprotect to a different protection fails, while
+reads and writes remain allowed.
+-}
 immutableBytesProtectionTest :: IO Result
 immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
-    page <- c_mmap nullPtr 4096 protReadWrite
-        (mapAnon .|. mapPrivate) (-1) 0
+    page <-
+        c_mmap
+            nullPtr
+            4096
+            protReadWrite
+            (mapAnon .|. mapPrivate)
+            (-1)
+            0
     when (page == intPtrToPtr (-1)) (fail "mmap failed")
     pokeByteOff page 0 (0x7a :: Word8)
     before <- peek (castPtr page :: Ptr Word8)
@@ -1019,9 +1200,15 @@ immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
     written <- peek (castPtr page :: Ptr Word8)
     when (written /= 0x42) (fail "write after mimmutable did not stick")
     protected <- c_mprotect page 4096 protRead
-    when (protected == 0)
-        (fail ("mprotect succeeded on immutable memory "
-            ++ "(before: " ++ show before ++ ")"))
+    when
+        (protected == 0)
+        ( fail
+            ( "mprotect succeeded on immutable memory "
+                ++ "(before: "
+                ++ show before
+                ++ ")"
+            )
+        )
     _ <- c_munmap page 4096
     pure ()
 
@@ -1073,10 +1260,11 @@ sessionCheck = (==) <$> getProcessGroupID <*> getProcessID
 cwdCheck :: FilePath -> IO Bool
 cwdCheck expected = (== expected) <$> getCurrentDirectory
 
--- | Standard descriptors are considered open when dup(2) succeeds
--- on each of them.  This probes the raw descriptors directly,
--- without involving the RTS IO manager (whose state after nested
--- forks is not the point of this test).
+{- | Standard descriptors are considered open when dup(2) succeeds
+on each of them.  This probes the raw descriptors directly,
+without involving the RTS IO manager (whose state after nested
+forks is not the point of this test).
+-}
 stdFdsOpenCheck :: IO [Bool]
 stdFdsOpenCheck = mapM checkFdOpen [stdInput, stdOutput, stdError]
 
@@ -1087,8 +1275,9 @@ checkFdOpen fd = do
         Left _ -> pure False
         Right duped -> closeFd duped >> pure True
 
--- | The daemonized child reports via an inherited pipe; the original
--- process exits inside 'daemonize', exactly like daemon(3).
+{- | The daemonized child reports via an inherited pipe; the original
+process exits inside 'daemonize', exactly like daemon(3).
+-}
 daemonizeTest :: IO Result
 daemonizeTest = do
     (readFd, writeFd) <- createPipe
@@ -1113,7 +1302,8 @@ daemonizeTest = do
     case (output, status) of
         (Nothing, _) -> pure (Fail "timed out waiting for the daemonized child")
         (_, Just (Exited ExitSuccess)) ->
-            expect (output == Just "checks [True,True,True,True,True]\n")
+            expect
+                (output == Just "checks [True,True,True,True,True]\n")
                 ("unexpected daemon report: " ++ show output)
         _ -> pure (Fail ("daemonize helper failed: " ++ show status))
 
@@ -1125,15 +1315,17 @@ daemonizePreserveTest = do
         closeFd readFd
         report <- fdToHandle writeFd
         hSetBuffering report LineBuffering
-        daemonizeWith defaultDaemonOptions
-            { changeDirectoryToRoot = False
-            , redirectStandardStreams = False
-            } $ do
-            ok1 <- sessionCheck
-            ok2 <- cwdCheck originalCwd
-            fds <- stdFdsOpenCheck
-            hPutStrLn report ("checks " ++ show ([ok1, ok2] ++ fds))
-            hFlush report
+        daemonizeWith
+            defaultDaemonOptions
+                { changeDirectoryToRoot = False
+                , redirectStandardStreams = False
+                }
+            $ do
+                ok1 <- sessionCheck
+                ok2 <- cwdCheck originalCwd
+                fds <- stdFdsOpenCheck
+                hPutStrLn report ("checks " ++ show ([ok1, ok2] ++ fds))
+                hFlush report
     closeFd writeFd
     output <- timeout 60000000 $ do
         h <- fdToHandle readFd
@@ -1145,7 +1337,8 @@ daemonizePreserveTest = do
     case (output, status) of
         (Nothing, _) -> pure (Fail "timed out waiting for the daemonized child")
         (_, Just (Exited ExitSuccess)) ->
-            expect (output == Just "checks [True,True,True,True,True]\n")
+            expect
+                (output == Just "checks [True,True,True,True,True]\n")
                 ("unexpected daemon report: " ++ show output)
         _ -> pure (Fail ("daemonize helper failed: " ++ show status))
 
@@ -1154,7 +1347,8 @@ pureTests =
     [ ("pledge: serializes every promise", promiseNamesTest)
     , ("pledge: promiseFromName round-trips", promiseFromNameTest)
     , ("unveil: serializes permission sets", unveilPermissionsTest)
-    ] ++ nulRejectionTests
+    ]
+        ++ nulRejectionTests
 
 runtimeTests :: [(String, IO Result)]
 runtimeTests =
@@ -1165,13 +1359,11 @@ runtimeTests =
     , ("proc: execPledged starts the new image pledged", execPledgedAllowedTest)
     , ("proc: execPledged violation dies of SIGABRT", execPledgedViolationTest)
     , ("proc: closeFrom closes descriptors", closeFromTest)
-
     , ("proc: getDescriptorCount reflects open descriptors", getDescriptorCountTest)
     , ("proc: setProgramName/getProgramName round-trip", prognameTest)
     , ("random: getEntropy returns requested lengths", getEntropyTest)
     , ("rtable: getRtable works unprivileged", rtableGetTest)
     , ("rtable: setRtable enforces existing domains", rtableTest)
-
     , ("memory: timingSafeEqual semantics", timingSafeEqualTest)
     , ("memory: timingSafeCompare semantics", timingSafeCompareTest)
     , ("memory: mimmutable keeps reads working", immutableBytesReadTest)

@@ -1,65 +1,66 @@
 {-# LANGUAGE CPP #-}
 
--- |
--- Module      : System.OpenBSD.Internal
--- Description : Raw FFI boundary for the openbsd package
---
--- This module is internal.  It contains the raw @foreign import@
--- declarations, the unsupported-platform guard, and the small
--- marshalling helpers shared by the public modules.  Nothing in here
--- is exported by the package.
---
--- All imports use the @unsafe@ calling convention: none of these
--- libc wrappers performs a callback or re-enters the RTS, so the
--- faster convention is appropriate (the word \"unsafe\" refers to the
--- FFI convention, not to security).  Most are short and
--- non-blocking; the password-hashing calls (@bcrypt_pbkdf@,
--- @crypt_newhash@, @crypt_checkpass@) are CPU-bound, which affects
--- latency but not memory safety.  None of them can throw Haskell
--- exceptions while a pointer argument is live.
---
--- The 'c_hsSetproctitle'\/'c_hsResetproctitle' pair wraps the tiny C
--- shim in @cbits\/openbsd.c@; see there for the rationale.
-module System.OpenBSD.Internal
-    ( c_pledge
-    , c_unveil
-    , c_setresuid
-    , c_setresgid
-    , c_getresuid
-    , c_getresgid
-    , c_initgroups
-    , c_chroot
-    , c_issetugid
-    , c_getpeereid
-    , c_arc4random
-    , c_arc4random_buf
-    , c_arc4random_uniform
-    , c_hsSetproctitle
-    , c_hsResetproctitle
-    , c_closefrom
-    , c_getdtablecount
-    , c_getrtable
-    , c_setrtable
-    , c_getentropy
-    , c_mimmutable
-    , c_explicit_bzero
-    , c_freezero
-    , c_timingsafe_bcmp
-    , c_timingsafe_memcmp
-    , c_getprogname
-    , c_setprogname
-    , c_crypt_checkpass
-    , c_crypt_newhash
-    , c_bcrypt_pbkdf
-    , checkNoNul
-    , withMaybeCString
-    ) where
+{- |
+Module      : System.OpenBSD.Internal
+Description : Raw FFI boundary for the openbsd package
+
+This module is internal.  It contains the raw @foreign import@
+declarations, the unsupported-platform guard, and the small
+marshalling helpers shared by the public modules.  Nothing in here
+is exported by the package.
+
+All imports use the @unsafe@ calling convention: none of these
+libc wrappers performs a callback or re-enters the RTS, so the
+faster convention is appropriate (the word \"unsafe\" refers to the
+FFI convention, not to security).  Most are short and
+non-blocking; the password-hashing calls (@bcrypt_pbkdf@,
+@crypt_newhash@, @crypt_checkpass@) are CPU-bound, which affects
+latency but not memory safety.  None of them can throw Haskell
+exceptions while a pointer argument is live.
+
+The 'c_hsSetproctitle'\/'c_hsResetproctitle' pair wraps the tiny C
+shim in @cbits\/openbsd.c@; see there for the rationale.
+-}
+module System.OpenBSD.Internal (
+    c_pledge,
+    c_unveil,
+    c_setresuid,
+    c_setresgid,
+    c_getresuid,
+    c_getresgid,
+    c_initgroups,
+    c_chroot,
+    c_issetugid,
+    c_getpeereid,
+    c_arc4random,
+    c_arc4random_buf,
+    c_arc4random_uniform,
+    c_hsSetproctitle,
+    c_hsResetproctitle,
+    c_closefrom,
+    c_getdtablecount,
+    c_getrtable,
+    c_setrtable,
+    c_getentropy,
+    c_mimmutable,
+    c_explicit_bzero,
+    c_freezero,
+    c_timingsafe_bcmp,
+    c_timingsafe_memcmp,
+    c_getprogname,
+    c_setprogname,
+    c_crypt_checkpass,
+    c_crypt_newhash,
+    c_bcrypt_pbkdf,
+    checkNoNul,
+    withMaybeCString,
+) where
 
 import Data.Word (Word32)
 import Foreign.C.String (CString, withCString)
-import Foreign.C.Types (CChar, CInt(..), CSize(..))
+import Foreign.C.Types (CChar, CInt (..), CSize (..))
 import Foreign.Ptr (Ptr, nullPtr)
-import System.Posix.Types (CGid(..), CUid(..), Fd(..))
+import System.Posix.Types (CGid (..), CUid (..), Fd (..))
 
 #if defined(openbsd_HOST_OS)
 
@@ -160,19 +161,21 @@ foreign import ccall unsafe "util.h bcrypt_pbkdf"
 
 #endif
 
--- | Reject strings that contain a @NUL@ byte before they reach any C
--- string conversion.  A @NUL@ would silently truncate the string at
--- the libc boundary, so accepting it here could make the kernel see a
--- different (shorter) value than the caller supplied.  Raises a
--- 'System.IO.Error.userError' with a message naming the offending
--- input.
+{- | Reject strings that contain a @NUL@ byte before they reach any C
+string conversion.  A @NUL@ would silently truncate the string at
+the libc boundary, so accepting it here could make the kernel see a
+different (shorter) value than the caller supplied.  Raises a
+'System.IO.Error.userError' with a message naming the offending
+input.
+-}
 checkNoNul :: String -> String -> IO ()
 checkNoNul what input
     | '\0' `elem` input = ioError (userError (what ++ ": input contains a NUL byte: " ++ show input))
     | otherwise = return ()
 
--- | Like 'withCString', but 'Nothing' is passed to the action as
--- @NULL@ instead of allocating a buffer.
+{- | Like 'withCString', but 'Nothing' is passed to the action as
+@NULL@ instead of allocating a buffer.
+-}
 withMaybeCString :: Maybe String -> (CString -> IO a) -> IO a
-withMaybeCString Nothing  action = action nullPtr
+withMaybeCString Nothing action = action nullPtr
 withMaybeCString (Just s) action = withCString s action
