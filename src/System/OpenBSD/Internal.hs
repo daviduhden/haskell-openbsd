@@ -9,12 +9,14 @@
 -- marshalling helpers shared by the public modules.  Nothing in here
 -- is exported by the package.
 --
--- All imports are @unsafe@: every function here is a short,
--- non-blocking libc wrapper that performs no callbacks and cannot
--- re-enter the RTS, so the faster @unsafe@ calling convention is
--- appropriate (the word \"unsafe\" refers to the FFI convention, not
--- to security).  None of them can throw Haskell exceptions while a
--- pointer argument is live.
+-- All imports use the @unsafe@ calling convention: none of these
+-- libc wrappers performs a callback or re-enters the RTS, so the
+-- faster convention is appropriate (the word \"unsafe\" refers to the
+-- FFI convention, not to security).  Most are short and
+-- non-blocking; the password-hashing calls (@bcrypt_pbkdf@,
+-- @crypt_newhash@, @crypt_checkpass@) are CPU-bound, which affects
+-- latency but not memory safety.  None of them can throw Haskell
+-- exceptions while a pointer argument is live.
 --
 -- The 'c_hsSetproctitle'\/'c_hsResetproctitle' pair wraps the tiny C
 -- shim in @cbits\/openbsd.c@; see there for the rationale.

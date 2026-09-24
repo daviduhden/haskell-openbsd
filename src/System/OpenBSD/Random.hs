@@ -20,6 +20,7 @@ module System.OpenBSD.Random
     , getEntropy
     ) where
 
+import Control.Exception (bracket)
 import Data.ByteString (ByteString, empty, packCStringLen)
 import Data.Word (Word32)
 import Foreign.C.Error (throwErrnoIfMinus1_)
@@ -46,12 +47,9 @@ arc4RandomBytes :: Int -> IO ByteString
 arc4RandomBytes n
     | n < 0 = ioError (userError "arc4RandomBytes: negative length")
     | n == 0 = pure empty
-    | otherwise = do
-        buf <- mallocBytes n
+    | otherwise = bracket (mallocBytes n) free $ \buf -> do
         c_arc4random_buf (castPtr buf) (fromIntegral n)
-        bytes <- packCStringLen (castPtr buf, n)
-        free buf
-        pure bytes
+        packCStringLen (castPtr buf, n)
 
 -- | Read up to 256 bytes of entropy from the kernel, as
 -- @getentropy(2)@.
@@ -68,13 +66,10 @@ getEntropy n
     | n < 0 = ioError (userError "getEntropy: negative length")
     | n > 256 = ioError (userError "getEntropy: length exceeds 256 bytes")
     | n == 0 = pure empty
-    | otherwise = do
-        buffer <- mallocBytes n
+    | otherwise = bracket (mallocBytes n) free $ \buffer -> do
         throwErrnoIfMinus1_ "getentropy" $
             c_getentropy (castPtr buffer) (fromIntegral n)
-        bytes <- packCStringLen (castPtr buffer, n)
-        free buffer
-        pure bytes
+        packCStringLen (castPtr buffer, n)
 
 -- | Return a uniformly distributed 32-bit value strictly less than
 -- @upperBound@, as @arc4random_uniform()@.
