@@ -40,14 +40,14 @@ import System.Posix.Process (ProcessStatus(..), executeFile, exitImmediately,
                              forkProcess, getProcessGroupID, getProcessID,
                              getProcessStatus)
 import System.Posix.Signals (sigABRT)
-import System.Posix.Types (Fd(..))
+import System.Posix.Types (COff(..), Fd(..))
 import System.Posix.User (getEffectiveGroupID, getEffectiveUserID, getGroups,
                           getUserEntryForName, userGroupID, userID)
 import System.Timeout (timeout)
 import Foreign.C.Error (throwErrno)
 import Foreign.Marshal.Array (allocaArray, peekArray)
 import Foreign.Marshal.Alloc (free, mallocBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, intPtrToPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, pokeByteOff)
 import qualified Data.ByteString as BS
 
@@ -64,9 +64,10 @@ foreign import ccall unsafe "sys/socket.h socketpair"
     c_socketpair :: CInt -> CInt -> CInt -> Ptr CInt -> IO CInt
 
 -- mmap/mprotect/munmap for the mimmutable test, operating on a page
--- mapped by the test itself.
+-- mapped by the test itself.  The final argument is off_t (64-bit on
+-- OpenBSD), not CInt.
 foreign import ccall unsafe "sys/mman.h mmap"
-    c_mmap :: Ptr () -> CSize -> CInt -> CInt -> CInt -> CInt -> IO (Ptr ())
+    c_mmap :: Ptr () -> CSize -> CInt -> CInt -> CInt -> COff -> IO (Ptr ())
 
 foreign import ccall unsafe "sys/mman.h mimmutable"
     c_mimmutable :: Ptr () -> CSize -> IO CInt
@@ -1009,7 +1010,7 @@ immutableBytesProtectionTest :: IO Result
 immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
     page <- c_mmap nullPtr 4096 protReadWrite
         (mapAnon .|. mapPrivate) (-1) 0
-    when (page == nullPtr) (fail "mmap failed")
+    when (page == intPtrToPtr (-1)) (fail "mmap failed")
     pokeByteOff page 0 (0x7a :: Word8)
     before <- peek (castPtr page :: Ptr Word8)
     immutableResult <- c_mimmutable page 4096
