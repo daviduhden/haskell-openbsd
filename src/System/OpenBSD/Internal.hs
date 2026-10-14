@@ -52,6 +52,9 @@ module System.OpenBSD.Internal (
     c_crypt_checkpass,
     c_crypt_newhash,
     c_bcrypt_pbkdf,
+#ifdef OPENBSD_80
+    c_getexecpath,
+#endif
     checkNoNul,
     withMaybeCString,
 ) where
@@ -154,6 +157,11 @@ foreign import ccall unsafe "unistd.h crypt_newhash"
 foreign import ccall unsafe "util.h bcrypt_pbkdf"
     c_bcrypt_pbkdf :: Ptr () -> CSize -> Ptr () -> CSize -> Ptr () -> CSize
                   -> Word32 -> IO CInt
+
+#ifdef OPENBSD_80
+foreign import ccall unsafe "unistd.h getexecpath"
+    c_getexecpath :: CString -> CSize -> IO CInt
+#endif
 
 #else
 

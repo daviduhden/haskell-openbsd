@@ -21,7 +21,7 @@ time on other platforms.
 | `getrtable(2)`/`setrtable(2)` | `System.OpenBSD.Rtable` | routing domains |
 | `mimmutable(2)`, `explicit_bzero(3)`, `freezero(3)`, `timingsafe_bcmp(3)`, `timingsafe_memcmp(3)` | `System.OpenBSD.Memory` | memory protection, secure erasure, constant-time comparison |
 | `crypt_checkpass(3)`, `crypt_newhash(3)`, `bcrypt_pbkdf(3)` | `System.OpenBSD.Authentication` | password hashing and key derivation |
-| `closefrom(2)`, `getdtablecount(2)`, `setprogname(3)` | `System.OpenBSD.Process` | descriptor hygiene; program name |
+| `closefrom(2)`, `getdtablecount(2)`, `setprogname(3)`, `getexecpath(3)` *(OpenBSD 8.0)* | `System.OpenBSD.Process` | descriptor hygiene; program name; executable path |
 
 These mechanisms restrict *different dimensions* of process authority
 and are normally complementary: a typical OpenBSD daemon uses all
@@ -382,6 +382,16 @@ inverted `nochdir`/`noclose` integers.  Daemonization is explicit and
 never automatic: foreground operation (preferred under modern service
 supervision such as rc.d) is fully supported.
 
+`setProgramName`/`getProgramName` wrap `setprogname(3)`/`getprogname(3)`.
+Because `setprogname(3)` stores the pointer it is handed rather than
+copying the string, the marshalled buffer is allocated with `malloc(3)`
+and deliberately never freed, so it stays valid for the lifetime of the
+process; `getProgramName` reports the empty string if the name was never
+set.  On OpenBSD 8.0 and later, enabling the `openbsd80` flag adds
+`getExecPath` (`getexecpath(3)`), which returns the canonicalised absolute
+pathname of the running ELF executable and throws `ENOENT` when the kernel
+cannot determine it.
+
 ## Random
 
 `System.OpenBSD.Random` binds the `arc4random(3)` family:
@@ -419,6 +429,7 @@ surface and the precise reasons behind deferred facilities.
 | `daemon(3)` | `System.OpenBSD.Process` | supported (runtime-safe `daemonize`) |
 | fork/exec + execpromises | `System.OpenBSD.Process` | supported (`forkExec`, `forkExecPledged`, `execPledged`) |
 | `closefrom(2)`, `getdtablecount(2)` | `System.OpenBSD.Process` | supported |
+| `getexecpath(3)` | `System.OpenBSD.Process` | supported behind the `openbsd80` Cabal flag (first appeared in OpenBSD 8.0) |
 | `arc4random(3)` family | `System.OpenBSD.Random` | supported |
 | `getentropy(2)` | `System.OpenBSD.Random` | supported (low-level, native 256-byte limit) |
 | `getrtable(2)`/`setrtable(2)` | `System.OpenBSD.Rtable` | supported |
@@ -440,18 +451,24 @@ surface and the precise reasons behind deferred facilities.
 | `pinsyscalls(2)`, `kbind(2)`, `__tfork(2)`, `__thrsleep(2)`, `futex(2)`, `__get_tcb(2)`, `__pledge_open(2)`, `utrace(2)`, `syscall(2)` | — | internal kernel/libc interfaces, not application APIs |
 | `skey(3)` | — | obsolete |
 
-Facilities above are audited against OpenBSD 7.9 (stable target) and
-OpenBSD-current.
+Facilities above are audited against OpenBSD 7.9 (stable target),
+OpenBSD 8.0 and OpenBSD-current.
 
 ## Supported OpenBSD versions
 
-* Targets OpenBSD 7.9 and OpenBSD-current.
+* Targets OpenBSD 7.9, OpenBSD 8.0 and OpenBSD-current.
+* Interfaces that first appeared in OpenBSD 8.0 are compiled only when the
+  `openbsd80` Cabal flag is enabled, so the default build keeps working on
+  7.9.  The flag currently gates `getexecpath(3)`
+  (`System.OpenBSD.Process.getExecPath`); its symbol does not exist in
+  7.9's libc.
 * The `Promise` list was verified against the kernel's
   `pledgereq` table in `sys/kern/kern_pledge.c` (rev 1.356 for 7.9,
-  1.360 for current): 35 promises, `tmppath` removed, `disklabel`,
-  `drm` and `vmm` included.
-* Unveil permissions verified against `sys/kern/kern_unveil.c`:
-  `r`, `w`, `x`, `c`, with the empty permission set valid.
+  1.369 for current): 35 promises, `tmppath` removed, `disklabel`,
+  `drm` and `vmm` included; the list is unchanged in 8.0.
+* Unveil permissions verified against `sys/kern/kern_unveil.c`
+  (rev 1.57 for current): `r`, `w`, `x`, `c`, with the empty permission
+  set valid.
 * Built and tested with GHC 9.10.3 / Cabal 3.16 as shipped on OpenBSD.
 
 ### Language standards

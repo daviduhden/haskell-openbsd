@@ -1,6 +1,6 @@
 cabal-version:      2.4
 name:               openbsd
-version:            2.4.0
+version:            2.5.0
 synopsis:           OpenBSD security facilities: pledge(2), unveil(2), privilege dropping
 description:
     Haskell bindings for the OpenBSD-specific security interfaces and
@@ -37,6 +37,14 @@ source-repository head
     type:     git
     location: https://github.com/daviduhden/haskell-openbsd
 
+flag openbsd80
+    description:
+        Bind interfaces that first appeared in OpenBSD 8.0.  Enabling this
+        flag makes the package require OpenBSD 8.0 or later, because the
+        added symbols do not exist in OpenBSD 7.9's libc.
+    default:  False
+    manual:   True
+
 library
     exposed-modules:
         System.OpenBSD
@@ -56,6 +64,8 @@ library
     c-sources:        cbits/openbsd.c
     cc-options:       -std=c23
     extra-libraries:  util
+    if flag(openbsd80)
+        cpp-options:  -DOPENBSD_80
     build-depends:
         base       >= 4.20  && < 5,
         unix       >= 2.7   && < 2.9,
@@ -84,3 +94,5 @@ test-suite openbsd-tests
     ghc-options:
         -Wall
         -threaded
+    if flag(openbsd80)
+        cpp-options:  -DOPENBSD_80
