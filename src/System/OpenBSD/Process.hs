@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 {- |
 Module      : System.OpenBSD.Process
 Description : Process titles, exec and daemonization
@@ -76,6 +78,9 @@ module System.OpenBSD.Process (
     -- * Program name
     setProgramName,
     getProgramName,
+#ifdef OPENBSD_80
+    getExecPath,
+#endif
 
     -- * Daemonization
     DaemonOptions (..),
@@ -85,10 +90,18 @@ module System.OpenBSD.Process (
 ) where
 
 import Control.Monad (when)
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.String (newCString, peekCString, withCString)
+#ifdef OPENBSD_80
+import Foreign.C.Error (throwErrnoIfMinus1_)
+import Foreign.Marshal.Alloc (allocaBytes)
+#endif
+import Foreign.Ptr (nullPtr)
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (..), hClose, openFile)
 import System.OpenBSD.Internal (
+#ifdef OPENBSD_80
+    c_getexecpath,
+#endif
     c_closefrom,
     c_getdtablecount,
     c_getprogname,
@@ -286,15 +299,53 @@ The stored name is used by @setproctitle(NULL)@
 ('resetProcessTitle') and by diagnostic messages; if the argument
 contains a slash, the basename is used, matching the native
 behavior.  The name must not contain embedded @NUL@ bytes.
+
+@setprogname(3)@ stores the /pointer/ it is handed rather than
+copying the string, so the buffer must stay alive for the rest of
+the process.  'newCString' allocates that buffer with @malloc(3)@
+and the caller is responsible for freeing it; the allocation is
+deliberately never freed, which is harmless because the program
+name is set a small, bounded number of times.
 -}
 setProgramName :: String -> IO ()
 setProgramName name = do
     checkNoNul "setProgramName" name
-    withCString name c_setprogname
+    c_setprogname =<< newCString name
 
--- | Return the stored program name, as @getprogname(3)@.
+{- | Return the stored program name, as @getprogname(3)@.
+
+The C runtime normally initialises the name from the program's
+@argv[0]@, but the pointer can in principle be @NULL@; a missing
+name is reported as the empty string rather than dereferenced.
+-}
 getProgramName :: IO String
-getProgramName = c_getprogname >>= peekCString
+getProgramName = do
+    pointer <- c_getprogname
+    if pointer == nullPtr
+        then return ""
+        else peekCString pointer
+
+#ifdef OPENBSD_80
+{- | Return the absolute, canonicalised pathname of the running ELF
+executable, as @getexecpath(3)@.
+
+The pathname has been canonicalised in the same manner as
+@realpath(3)@.  This interface first appeared in OpenBSD 8.0 and is
+therefore only compiled when the @openbsd80@ Cabal flag is enabled.
+
+Throws an 'IOError' (via 'throwErrnoIfMinus1_') if the kernel cannot
+determine the pathname (for example when the process was started in a
+directory that is no longer linked to the filesystem), in which case
+the error code is @ENOENT@.
+-}
+getExecPath :: IO FilePath
+getExecPath = allocaBytes pathMax $ \buffer -> do
+    throwErrnoIfMinus1_ "getexecpath" (c_getexecpath buffer (fromIntegral pathMax))
+    peekCString buffer
+  where
+    -- PATH_MAX from <sys/syslimits.h>.
+    pathMax = 1024 :: Int
+#endif
 
 {- | Reject embedded NUL bytes in every string that will cross the
 exec boundary.  Runs entirely in the caller, before any fork or

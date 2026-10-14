@@ -1103,6 +1103,16 @@ prognameTest = inChild "progname" $ do
     when (name /= "obd-progname-test") $
         fail ("program name mismatch: " ++ show name)
 
+#ifdef OPENBSD_80
+-- getexecpath tests
+
+getExecPathTest :: IO Result
+getExecPathTest = inChild "getexecpath" $ do
+    path <- getExecPath
+    when (null path) (fail "empty executable path")
+    unless (take 1 path == "/") (fail ("not an absolute path: " ++ show path))
+#endif
+
 -- entropy tests
 
 getEntropyTest :: IO Result
@@ -1403,6 +1413,9 @@ runtimeTests =
     , ("random: arc4random works under pledge stdio", arc4randomPledgeTest)
     , ("proc: daemonize detaches the process", daemonizeTest)
     , ("proc: daemonize can preserve cwd and streams", daemonizePreserveTest)
+#ifdef OPENBSD_80
+    , ("proc: getExecPath returns an absolute path", getExecPathTest)
+#endif
     ]
 
 tests :: [(String, IO Result)]
