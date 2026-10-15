@@ -17,7 +17,10 @@ unavoidable limitations of the garbage-collected runtime apply:
 password buffers cannot be guaranteed to be erased in place (use
 'System.OpenBSD.Memory.explicitBzero' on explicit native buffers
 if that matters), and the comparison itself is performed by the
-native constant-time implementation.
+native constant-time implementation.  The temporary native buffer
+that 'bcryptPbkdf' derives into /is/ zeroed and released with
+'System.OpenBSD.Memory.freeZero'; only the returned, GC-managed
+copy carries the documented erasure limitation.
 -}
 module System.OpenBSD.Authentication (
     -- * Password hashes
@@ -40,7 +43,7 @@ import Foreign.C.Error (
     throwErrnoIfMinus1_,
  )
 import Foreign.C.String (withCString)
-import Foreign.Marshal.Alloc (allocaBytes, free, mallocBytes)
+import Foreign.Marshal.Alloc (allocaBytes, mallocBytes)
 import Foreign.Ptr (castPtr)
 import System.OpenBSD.Internal (
     c_bcrypt_pbkdf,
@@ -48,6 +51,7 @@ import System.OpenBSD.Internal (
     c_crypt_newhash,
     checkNoNul,
  )
+import System.OpenBSD.Memory (freeZero)
 
 {- | Verify a password against a hash, as @crypt_checkpass(3)@.
 
@@ -116,20 +120,22 @@ bcryptPbkdf :: ByteString -> ByteString -> Word32 -> Int -> IO ByteString
 bcryptPbkdf password salt rounds keyLen
     | keyLen < 0 = ioError (userError "bcryptPbkdf: negative key length")
     | keyLen == 0 = pure empty
-    | otherwise = bracket (mallocBytes keyLen) free $ \keyBuffer -> do
-        result <- BS.useAsCStringLen password $ \(passPtr, passLen) ->
-            BS.useAsCStringLen salt $ \(saltPtr, saltLen) ->
-                c_bcrypt_pbkdf
-                    (castPtr passPtr)
-                    (fromIntegral passLen)
-                    (castPtr saltPtr)
-                    (fromIntegral saltLen)
-                    keyBuffer
-                    (fromIntegral keyLen)
-                    rounds
-        when (result /= 0) $
-            ioError (userError "bcrypt_pbkdf: invalid arguments")
-        packCStringLen (castPtr keyBuffer, keyLen)
+    | otherwise =
+        bracket (mallocBytes keyLen) (\buffer -> freeZero buffer keyLen) $
+            \keyBuffer -> do
+                result <- BS.useAsCStringLen password $ \(passPtr, passLen) ->
+                    BS.useAsCStringLen salt $ \(saltPtr, saltLen) ->
+                        c_bcrypt_pbkdf
+                            (castPtr passPtr)
+                            (fromIntegral passLen)
+                            (castPtr saltPtr)
+                            (fromIntegral saltLen)
+                            keyBuffer
+                            (fromIntegral keyLen)
+                            rounds
+                when (result /= 0) $
+                    ioError (userError "bcrypt_pbkdf: invalid arguments")
+                packCStringLen (castPtr keyBuffer, keyLen)
 
 {- | Reject embedded NUL bytes in secret byte strings before they
 cross a C string boundary, where the native function would

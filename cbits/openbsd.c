@@ -13,10 +13,8 @@
  * imports in System.OpenBSD.Internal.
  */
 
-#include <signal.h>
 #include <stddef.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 #if !defined(__OpenBSD__)
 #error "haskell-openbsd requires OpenBSD"

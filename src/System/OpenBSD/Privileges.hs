@@ -15,8 +15,11 @@ This ordering matters: @setgroups(2)@ requires privilege, and once
 root is gone the saved IDs must not allow the process to regain it.
 The high-level operations verify the resulting identity and raise
 an exception if any part of the drop did not take effect; the whole
-transition is performed with asynchronous exceptions masked so that
-it cannot be interrupted halfway through by another Haskell thread.
+transition is performed with asynchronous exceptions masked on the
+dropping thread, so an asynchronous exception cannot be delivered
+between the steps.  Masking does not make the individual kernel
+calls atomic and does not synchronize unrelated threads; the
+underlying calls are still ordinary process-global operations.
 
 Privilege dropping is intended as an initialization transition.
 These operations change process-wide security state, are not
@@ -152,16 +155,22 @@ exception.  The calling process must have sufficient privilege
 'System.IO.Error.IOError' and the exception reports exactly which
 step failed.
 
-The whole transition runs with asynchronous exceptions masked: once
-it starts, another Haskell thread cannot interrupt it halfway
-through (for example, after groups have been dropped but before the
-saved IDs are gone).  Synchronous failures are still raised with
-their underlying @errno@.
+The whole transition runs with asynchronous exceptions masked on the
+calling thread: once it starts, an asynchronous exception cannot be
+delivered between the steps (for example, after groups have been
+dropped but before the saved IDs are gone).  Masking does not make
+the kernel calls atomic and does not synchronize other threads.
+Synchronous failures are still raised with their underlying @errno@.
 
 If a step fails partway through, the process may already have
 reduced privileges and /must not/ continue normal service
 execution: treat any exception from this function as fatal for the
 current process.
+
+The resolved account must not be @root@; dropping to the root
+account would leave the process fully privileged while appearing to
+succeed, so it is rejected.  (An explicit 'Account' for root can
+still be passed to 'dropPrivilegesTo'.)
 
 If the process has called 'System.OpenBSD.Pledge.pledge', it must
 still hold the @id@ promise (for the identity-changing calls) and
@@ -172,16 +181,36 @@ again without them.
 dropPrivileges :: String -> IO ()
 dropPrivileges = dropPrivilegesWith PrimaryGroupOnly
 
--- | Like 'dropPrivileges', but with an explicit @GroupPolicy@.
+{- | Like 'dropPrivileges', but with an explicit @GroupPolicy@.
+
+The account is resolved by name and must not be @root@: dropping to
+the root account would be a silent no-op that leaves the process
+fully privileged, so it is rejected instead of appearing to succeed.
+Use 'dropPrivilegesTo' with an explicitly constructed 'Account' if a
+no-op transition is genuinely intended.
+-}
 dropPrivilegesWith :: GroupPolicy -> String -> IO ()
-dropPrivilegesWith policy name =
-    accountByName name >>= dropPrivilegesTo policy
+dropPrivilegesWith policy name = do
+    account <- accountByName name
+    when (accountUid account == 0) $
+        ioError
+            ( userError
+                ( "dropPrivileges: refusing to drop privileges to root account "
+                    ++ show name
+                )
+            )
+    dropPrivilegesTo policy account
 
 {- | Drop privileges to a previously resolved account.
 
 Useful when the account must be resolved while still privileged
 (for example, before @chroot(2)@ makes the password database
 unavailable) but privileges dropped later.
+
+Unlike 'dropPrivileges' and 'dropPrivilegesWith', this lower-level
+operation does not reject the root account: verifying the current
+identity is a legitimate, if unusual, use of an explicitly
+constructed 'Account'.  The same partial-failure caveats apply.
 -}
 dropPrivilegesTo :: GroupPolicy -> Account -> IO ()
 dropPrivilegesTo policy account = mask_ $ do

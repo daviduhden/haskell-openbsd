@@ -9,14 +9,22 @@ declarations, the unsupported-platform guard, and the small
 marshalling helpers shared by the public modules.  Nothing in here
 is exported by the package.
 
-All imports use the @unsafe@ calling convention: none of these
-libc wrappers performs a callback or re-enters the RTS, so the
-faster convention is appropriate (the word \"unsafe\" refers to the
-FFI convention, not to security).  Most are short and
-non-blocking; the password-hashing calls (@bcrypt_pbkdf@,
-@crypt_newhash@, @crypt_checkpass@) are CPU-bound, which affects
-latency but not memory safety.  None of them can throw Haskell
-exceptions while a pointer argument is live.
+None of these libc wrappers performs a callback or re-enters the
+RTS, so the faster @unsafe@ calling convention is appropriate for
+them (the word \"unsafe\" names the FFI convention, not a security
+property); those calls are short and non-blocking, and none can
+throw a Haskell exception while a pointer argument is live.
+
+The three CPU-bound cryptographic helpers (@bcrypt_pbkdf@,
+@crypt_newhash@ and @crypt_checkpass@) are imported as @safe@
+instead.  Their cost is proportional to a caller-supplied cost
+parameter (the bcrypt rounds), so a single call can run for seconds
+or much longer; on an @unsafe@ import that would stall every Haskell
+thread, the timer manager and the garbage collector for the whole
+duration.  A @safe@ import lets the runtime keep running other
+capabilities while the native call proceeds.  The marshalled buffers
+are pinned for the whole call (@withCString@, @useAsCString@ and
+@allocaBytes@), so pointer validity is unaffected.
 
 The 'c_hsSetproctitle'\/'c_hsResetproctitle' pair wraps the tiny C
 shim in @cbits\/openbsd.c@; see there for the rationale.
@@ -113,21 +121,21 @@ foreign import ccall unsafe "hs_resetproctitle"
     c_hsResetproctitle :: IO ()
 
 foreign import ccall unsafe "unistd.h closefrom"
-    c_closefrom :: CInt -> IO ()
+    c_closefrom :: CInt -> IO CInt
 
 foreign import ccall unsafe "unistd.h getdtablecount"
     c_getdtablecount :: IO CInt
 
-foreign import ccall unsafe "unistd.h getrtable"
+foreign import ccall unsafe "sys/socket.h getrtable"
     c_getrtable :: IO CInt
 
-foreign import ccall unsafe "unistd.h setrtable"
+foreign import ccall unsafe "sys/socket.h setrtable"
     c_setrtable :: CInt -> IO CInt
 
 foreign import ccall unsafe "unistd.h getentropy"
     c_getentropy :: Ptr () -> CSize -> IO CInt
 
-foreign import ccall unsafe "unistd.h mimmutable"
+foreign import ccall unsafe "sys/mman.h mimmutable"
     c_mimmutable :: Ptr () -> CSize -> IO CInt
 
 foreign import ccall unsafe "string.h explicit_bzero"
@@ -148,13 +156,13 @@ foreign import ccall unsafe "stdlib.h getprogname"
 foreign import ccall unsafe "stdlib.h setprogname"
     c_setprogname :: CString -> IO ()
 
-foreign import ccall unsafe "unistd.h crypt_checkpass"
+foreign import ccall safe "unistd.h crypt_checkpass"
     c_crypt_checkpass :: CString -> CString -> IO CInt
 
-foreign import ccall unsafe "unistd.h crypt_newhash"
+foreign import ccall safe "unistd.h crypt_newhash"
     c_crypt_newhash :: CString -> CString -> Ptr CChar -> CSize -> IO CInt
 
-foreign import ccall unsafe "util.h bcrypt_pbkdf"
+foreign import ccall safe "util.h bcrypt_pbkdf"
     c_bcrypt_pbkdf :: Ptr () -> CSize -> Ptr () -> CSize -> Ptr () -> CSize
                   -> Word32 -> IO CInt
 

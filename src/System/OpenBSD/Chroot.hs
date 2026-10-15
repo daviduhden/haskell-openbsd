@@ -19,6 +19,10 @@ Privilege dropping should normally follow chroot.  Note that
 @chroot(2)@ is not permitted at all once the process has called
 @pledge(2)@: it is not covered by any promise, so it must be
 performed before pledging.
+
+The path is a 'FilePath' marshalled through @withCString@ (the
+commonly used @unix@ convention), so it is encoded with the current
+locale encoding and must not contain embedded @NUL@ bytes.
 -}
 module System.OpenBSD.Chroot (
     -- * Changing the filesystem root
@@ -55,8 +59,9 @@ chroot path = do
 
 as one masked operation.  Changing the working directory to the
 new root closes the classic @\"..\"@ escape.  The whole transition
-runs with asynchronous exceptions masked, so another Haskell thread
-cannot interrupt it between the two calls.
+runs with asynchronous exceptions masked on the calling thread, so
+an asynchronous exception cannot be delivered between the two
+calls; masking does not make the two kernel calls atomic.
 
 The transition is irreversible and only partially protected on
 failure: if @chroot@ succeeds but @chdir@ fails, the process is

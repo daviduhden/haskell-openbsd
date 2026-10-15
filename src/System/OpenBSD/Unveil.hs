@@ -22,6 +22,12 @@ the point of the filesystem call, not as exceptions from this
 module.  These operations change process-wide security state and
 should normally be performed before arbitrary concurrent
 application work begins.
+
+Paths are 'FilePath' values marshalled through @withCString@, as
+elsewhere in the @unix@ package, so they are encoded with the
+current locale encoding; a path that cannot be represented in that
+encoding cannot be unveiled, and embedded @NUL@ bytes are rejected
+explicitly.
 -}
 module System.OpenBSD.Unveil (
     -- * Permissions
@@ -74,12 +80,13 @@ permissionString = map permissionChar
 {- | Add a single unveil rule, as @unveil(path, permissions)@: make
 @path@ available with the given permissions.
 
-May be called repeatedly; the rules accumulate.  Fails with
+May be called repeatedly; the rules accumulate, and a later call for
+a path that is already unveiled /replaces/ that path's permission
+set (it neither unions nor is rejected for widening it).  Fails with
 @ENOENT@ if a directory in the path does not exist (a nonexistent
-final component is valid and is remembered by name), @EINVAL@ for
-invalid permissions, and @EPERM@ if the configuration is already
-locked or the change would increase permissions.  The path must not
-contain embedded @NUL@ bytes.
+final component is valid and is remembered by name), @EINVAL@ for an
+invalid permission string, and @EPERM@ if the configuration is
+already locked.  The path must not contain embedded @NUL@ bytes.
 -}
 unveil :: FilePath -> [Permission] -> IO ()
 unveil path permissions = do
@@ -89,7 +96,12 @@ unveil path permissions = do
             throwErrnoPathIfMinus1_ "unveil" path $
                 c_unveil cPath cPermissions
 
--- | Add multiple unveil rules.
+{- | Add multiple unveil rules.
+
+The rules are applied in order.  If one fails, the rules installed
+before it remain in effect and the exception propagates; this is
+not an atomic operation.
+-}
 unveilPaths :: [(FilePath, [Permission])] -> IO ()
 unveilPaths = mapM_ (uncurry unveil)
 
@@ -104,6 +116,14 @@ lockUnveil =
     throwErrnoIfMinus1_ "unveil" $
         c_unveil nullPtr nullPtr
 
--- | Install all the given rules and lock the unveil configuration.
+{- | Install all the given rules and lock the unveil configuration,
+equivalent to 'unveilPaths' followed by 'lockUnveil'.
+
+This is /not/ an atomic transaction: if installing a rule fails, the
+rules installed before it remain in effect and the configuration is
+left unlocked.  A caller that reaches that state holds a partially
+configured filesystem view and should treat the failure as fatal (or
+install rules individually and handle each failure).
+-}
 unveilAndLock :: [(FilePath, [Permission])] -> IO ()
 unveilAndLock paths = unveilPaths paths >> lockUnveil

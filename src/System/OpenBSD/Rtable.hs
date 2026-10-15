@@ -25,6 +25,7 @@ module System.OpenBSD.Rtable (
 ) where
 
 import Foreign.C.Error (throwErrnoIfMinus1_)
+import Foreign.C.Types (CInt)
 import System.OpenBSD.Internal (c_getrtable, c_setrtable)
 
 {- | A routing domain ID, as used by @getrtable(2)@ and
@@ -60,6 +61,15 @@ sufficiently privileged process can change the domain again later.
 Sockets created after the change live in the new domain.
 -}
 setRtable :: Rtable -> IO ()
-setRtable (Rtable table) =
-    throwErrnoIfMinus1_ "setrtable" $
-        c_setrtable (fromIntegral table)
+setRtable (Rtable table)
+    | fromIntegral (fromIntegral table :: CInt) /= table =
+        ioError
+            ( userError
+                ( "setRtable: routing domain "
+                    ++ show table
+                    ++ " does not fit in a C int"
+                )
+            )
+    | otherwise =
+        throwErrnoIfMinus1_ "setrtable" $
+            c_setrtable (fromIntegral table)

@@ -14,15 +14,18 @@ OpenBSD's memory-handling extensions:
 Haskell values are garbage-collected, may be copied, and cannot be
 reliably erased in place, so the erasure functions operate on
 explicitly allocated native memory ('Foreign.Ptr.Ptr') and make no
-promises about arbitrary immutable Haskell values.  The
-constant-time comparisons operate on 'Data.ByteString.ByteString'
-buffers and are the recommended interfaces for comparing secrets
-such as hashes and MACs; do not reimplement them with an
-early-exiting Haskell comparison.
+promises about arbitrary immutable Haskell values.
+'immutableMemory' likewise applies only to explicit native memory:
+freezing pages that belong to the runtime, the garbage collector or
+a @malloc(3)@ arena can permanently break the memory manager that
+owns them.  The constant-time comparisons operate on
+'Data.ByteString.ByteString' buffers and are the recommended
+interfaces for comparing secrets such as hashes and MACs; do not
+reimplement them with an early-exiting Haskell comparison.
 -}
 module System.OpenBSD.Memory (
-    -- * Making memory permanently read-only
-    immutableBytes,
+    -- * Making memory permanently immutable
+    immutableMemory,
 
     -- * Secure erasure of native memory
     explicitBzero,
@@ -46,23 +49,37 @@ import System.OpenBSD.Internal (
  )
 
 {- | Permanently forbid future changes to the protection or mapping
-of the given byte buffer, as @mimmutable(2)@.
+of a native memory region, as @mimmutable(2)@.
 
-The buffer's memory is marked immutable: most subsequent
-@mprotect(2)@, @munmap(2)@, @madvise(2)@, @msync(2)@, @mmap(2)@
-and @minherit(2)@ operations on it fail with @EPERM@ (unmapping is
-the core guarantee).  Reads and writes to the memory itself remain
-allowed; the mechanism protects the /mapping/, not the contents.
-The change is permanent.
+The region starting at @addr@ with the given length is marked
+immutable: most subsequent @mprotect(2)@, @munmap(2)@, @madvise(2)@,
+@msync(2)@, @mmap(2)@ and @minherit(2)@ operations on it fail with
+@EPERM@ (unmapping is the core guarantee).  Reads and writes to the
+memory itself remain allowed; the mechanism protects the /mapping/,
+not the contents.  The change is permanent.
 
-Allowed under the @stdio@ pledge promise.  An invalid range fails
-with the native @EINVAL@.
+The kernel aligns the range /outward/ to whole pages, rounding
+@addr@ down and the length up, so every page that overlaps the
+region becomes immutable.  @addr@ must therefore point into a
+dedicated native mapping (for example one created with @mmap(2)@)
+that will never be returned to an allocator: freezing a page that
+belongs to the GHC heap, to a 'Data.ByteString.ByteString' buffer or
+to a @malloc(3)@ arena can permanently prevent the runtime or the
+allocator from @mprotect(2)@ing or @munmap(2)@ing memory it owns.
+This binding takes a raw pointer and length rather than a bytestring
+precisely so that this requirement cannot be overlooked.
+
+A negative length is rejected and a zero length is a no-op.  Allowed
+under the @stdio@ pledge promise.  An invalid range fails with the
+native @EINVAL@.
 -}
-immutableBytes :: ByteString -> IO ()
-immutableBytes bytes =
-    BS.useAsCStringLen bytes $ \(buffer, len) ->
+immutableMemory :: Ptr a -> Int -> IO ()
+immutableMemory addr len
+    | len < 0 = ioError (userError "immutableMemory: negative length")
+    | len == 0 = pure ()
+    | otherwise =
         throwErrnoIfMinus1_ "mimmutable" $
-            c_mimmutable (castPtr buffer) (fromIntegral len)
+            c_mimmutable (castPtr addr) (fromIntegral len)
 
 {- | Securely overwrite a native-memory region with zeroes, as
 @explicit_bzero(3)@.
