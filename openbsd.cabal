@@ -62,7 +62,7 @@ library
         System.OpenBSD.Internal
     hs-source-dirs:   src
     c-sources:        cbits/openbsd.c
-    cc-options:       -std=c23
+    cc-options:       -std=c23 -Wall -Wextra
     extra-libraries:  util
     if flag(openbsd80)
         cpp-options:  -DOPENBSD_80

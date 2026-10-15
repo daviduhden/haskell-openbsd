@@ -90,9 +90,9 @@ module System.OpenBSD.Process (
 ) where
 
 import Control.Monad (when)
+import Foreign.C.Error (throwErrnoIfMinus1_)
 import Foreign.C.String (newCString, peekCString, withCString)
 #ifdef OPENBSD_80
-import Foreign.C.Error (throwErrnoIfMinus1_)
 import Foreign.Marshal.Alloc (allocaBytes)
 #endif
 import Foreign.Ptr (nullPtr)
@@ -192,8 +192,10 @@ A thin, validated wrapper over 'System.Posix.Process.forkProcess'
 + 'System.Posix.Process.executeFile': every argument and
 environment string is checked for embedded @NUL@ bytes in the
 parent before forking, and the child does nothing except reach
-exec as directly as possible.  If the exec fails, the child exits
-immediately with status 127.
+exec as directly as possible.  If the exec fails, the child never
+continues normal execution: the failure is raised in the child and
+reported by the runtime, and the child terminates with a nonzero
+status.
 
 If the calling process has already pledged itself, its current
 promises must still allow @fork@ and @execve@ (generally @proc@
@@ -234,7 +236,9 @@ fresh-process boundary instead.
 
 The executable path, arguments and environment values are validated
 in the caller before forking: embedded @NUL@ bytes are rejected.
-If the exec fails, the child exits immediately with status 127.
+If the exec fails, the child never continues normal execution: the
+failure is raised in the child and reported by the runtime, and the
+child terminates with a nonzero status.
 
 If the calling process has already pledged itself, its current
 promises must still allow @fork@ and @execve@ (generally @proc@
@@ -263,6 +267,10 @@ execChild ::
     Maybe [(String, String)] ->
     IO ()
 execChild executable searchPath arguments environment = do
+    -- 'executeFile' never returns on success and raises on failure, so
+    -- the child normally terminates through the runtime's uncaught-
+    -- exception handler.  The explicit exit is a defensive fallback
+    -- that keeps the child from ever returning to Haskell code.
     _ <- executeFile executable searchPath arguments environment
     _ <- exitImmediately (ExitFailure 127)
     pure ()
@@ -275,16 +283,24 @@ privilege-separated programs call it around spawn\/exec time, with
 the descriptors to keep reserved at the low numbers.  The argument
 itself is closed too, as are any runtime-managed descriptors above
 it; afterwards the caller must not perform Handle-based I/O on the
-closed descriptors (or must rebuild the relevant Handles).  On OpenBSD 7.9, a
-descriptor beyond the table is a harmless no-op.
+closed descriptors (or must rebuild the relevant Handles).
+
+@closefrom(2)@ returns @-1@ with @EBADF@ when the argument is
+greater than every open descriptor, and this wrapper propagates
+that as an 'IOError': passing a descriptor number at or above which
+nothing is open is an error, not a silent no-op.  Callers that
+intend \"close everything above the standard descriptors\" should
+therefore either guarantee that at least the argument itself is
+open or tolerate the @EBADF@ case explicitly.
 
 Allowed under the @stdio@ pledge promise.
 -}
 closeFrom :: Fd -> IO ()
-closeFrom (Fd fd) = c_closefrom fd
+closeFrom (Fd fd) =
+    throwErrnoIfMinus1_ "closefrom" (c_closefrom fd)
 
 {- | Return the current number of open file descriptors, as
-@getdtablecount(2)@: one more than the highest open descriptor.
+@getdtablecount(2)@.
 
 Useful for auditing and for descriptor-hygiene checks around
 spawn and privilege-separation boundaries.  Allowed under the
@@ -417,12 +433,16 @@ runtime-aware primitives:
 > forkProcess (setsid; chdir("/") if requested; redirect 0\/1\/2
 > to /dev/null if requested; run the action)
 
-and the original process exits with @exit(3)@ so the runtime shuts
-down cleanly.
+and the original process terminates immediately with @_exit(2)@
+(not @exit(3)@): this deliberately avoids running the inherited
+@atexit(3)@ handlers and flushing the inherited @stdio(3)@ buffers a
+second time in the parent, matching @daemon(3)@.
 
-As with @daemon(3)@, the caller never observes failures that occur
-after the fork: errors in @setsid(2)@ or the redirection are
-reported by the daemonized child, not by this function.
+If @forkProcess@ itself fails, the 'IOError' propagates in the
+original process, which stays attached to the terminal.  As with
+@daemon(3)@, the caller never observes failures that occur after the
+fork: errors in @setsid(2)@ or the redirection are reported by the
+daemonized child, not by this function.
 
 Caveat: when standard streams are redirected, descriptors 0, 1 and
 2 are assumed to be the standard streams; if the caller has closed
@@ -464,5 +484,9 @@ redirectToDevNull = do
     nullHandle <- openFile "/dev/null" ReadWriteMode
     nullFd <- handleToFd nullHandle
     mapM_ (dupTo nullFd) [stdInput, stdOutput, stdError]
-    closeFd nullFd
+    -- If /dev/null was opened onto one of the standard descriptors
+    -- (because the caller had closed it), that descriptor is now the
+    -- duplicate we want to keep: closing it would leave the standard
+    -- stream closed again.
+    when (nullFd > stdError) (closeFd nullFd)
     hClose nullHandle

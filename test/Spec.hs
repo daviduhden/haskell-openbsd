@@ -30,12 +30,13 @@ import Data.Bits ((.|.))
 import Data.ByteString qualified as BS
 import Data.List (isInfixOf, nub)
 import Data.Word (Word8)
-import Foreign.C.Error (throwErrno)
+import Foreign.C.Error (Errno (..), eBADF, throwErrno)
 import Foreign.C.Types (CInt (..), CSize (..))
 import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Marshal.Array (allocaArray, peekArray)
 import Foreign.Ptr (Ptr, castPtr, intPtrToPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, pokeByteOff)
+import qualified GHC.IO.Exception as IOE
 import System.Directory (
     createDirectoryIfMissing,
     doesDirectoryExist,
@@ -436,6 +437,10 @@ nulRejectionTests =
         ( "auth: bcryptPbkdf rejects negative key lengths"
         , expectIOError "bcryptPbkdf negative" (bcryptPbkdf "p" "s" 4 (-1))
         )
+    ,
+        ( "memory: immutableMemory rejects negative lengths"
+        , expectIOError "immutableMemory negative" (immutableMemory nullPtr (-1))
+        )
     ]
 
 -- pledge tests
@@ -721,6 +726,16 @@ dropUnknownUserTest = inChild "privdrop-unknown" $ do
     case result of
         Left (_ :: IOException) -> pure ()
         Right () -> fail "privileges were dropped to a nonexistent account"
+
+{- | Dropping to the root account by name is refused instead of
+silently succeeding while leaving the process privileged.
+-}
+dropRootRefusedTest :: IO Result
+dropRootRefusedTest = inChild "privdrop-root" $ do
+    result <- try (dropPrivileges "root")
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right () -> fail "dropPrivileges accepted the root account"
 
 {- | Without sufficient privileges the drop must fail early with the
 native EPERM preserved through the masked transition, instead of
@@ -1083,6 +1098,26 @@ closeFromTest = do
         Just (Exited (ExitFailure code)) -> pure (Fail ("closefrom check " ++ show code))
         other -> pure (Fail ("child: " ++ show other))
 
+{- | closefrom(2) reports @EBADF@ when the argument is greater than
+every open descriptor.  The wrapper must surface that errno rather
+than silently ignoring the native result.
+-}
+closeFromEbadfTest :: IO Result
+closeFromEbadfTest = inChild "closefrom-ebadf" $ do
+    result <- try (closeFrom (Fd 1_000_000)) :: IO (Either IOException ())
+    case result of
+        Left e -> case IOE.ioe_errno e of
+            Just c | Errno c == eBADF -> pure ()
+            other ->
+                fail
+                    ( "expected EBADF from closeFrom, got "
+                        ++ displayException e
+                        ++ " (errno "
+                        ++ show other
+                        ++ ")"
+                    )
+        Right () -> fail "closeFrom beyond the table was accepted"
+
 getDescriptorCountTest :: IO Result
 getDescriptorCountTest = inChild "dtablecount" $ do
     count0 <- getDescriptorCount
@@ -1152,6 +1187,16 @@ rtableTest = inChild "rtable" $ do
         Left (_ :: IOException) -> pure ()
         Right () -> fail "setRtable accepted a domain that does not exist"
 
+{- | A domain value that does not fit in the native @int@ is rejected
+instead of being silently truncated to a different domain.
+-}
+rtableOutOfRangeTest :: IO Result
+rtableOutOfRangeTest = inChild "rtable-range" $ do
+    result <- try (setRtable (Rtable (maxBound :: Int)))
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right () -> fail "setRtable accepted an out-of-range domain"
+
 -- memory tests
 
 timingSafeEqualTest :: IO Result
@@ -1177,22 +1222,29 @@ timingSafeCompareTest = inChild "timingsafe-cmp" $ do
     when ([r1, r2, r3, r4, r5, r6] /= [LT, GT, EQ, LT, GT, EQ]) $
         fail "timingSafeCompare mismatch"
 
-immutableBytesReadTest :: IO Result
-immutableBytesReadTest = inChild "mimmutable-read" $ do
-    bytes <- arc4RandomBytes 4096
-    before <- BS.useAsCStringLen bytes $ \(buffer, _) ->
-        peek (castPtr buffer :: Ptr Word8)
-    immutableBytes bytes
-    after <- BS.useAsCStringLen bytes $ \(buffer, _) ->
-        peek (castPtr buffer :: Ptr Word8)
+immutableMemoryReadTest :: IO Result
+immutableMemoryReadTest = inChild "mimmutable-read" $ do
+    page <-
+        c_mmap
+            nullPtr
+            4096
+            protReadWrite
+            (mapAnon .|. mapPrivate)
+            (-1)
+            0
+    when (page == intPtrToPtr (-1)) (fail "mmap failed")
+    pokeByteOff page 0 (0x7a :: Word8)
+    before <- peek (castPtr page :: Ptr Word8)
+    immutableMemory page 4096
+    after <- peek (castPtr page :: Ptr Word8)
     when (before /= after) (fail "content changed after mimmutable")
 
 {- | mimmutable blocks future protection changes on a page mapped by
 the test itself: mprotect to a different protection fails, while
 reads and writes remain allowed.
 -}
-immutableBytesProtectionTest :: IO Result
-immutableBytesProtectionTest = inChild "mimmutable-protect" $ do
+immutableMemoryProtectionTest :: IO Result
+immutableMemoryProtectionTest = inChild "mimmutable-protect" $ do
     page <-
         c_mmap
             nullPtr
@@ -1369,15 +1421,17 @@ runtimeTests =
     , ("proc: execPledged starts the new image pledged", execPledgedAllowedTest)
     , ("proc: execPledged violation dies of SIGABRT", execPledgedViolationTest)
     , ("proc: closeFrom closes descriptors", closeFromTest)
+    , ("proc: closeFrom surfaces EBADF beyond the table", closeFromEbadfTest)
     , ("proc: getDescriptorCount reflects open descriptors", getDescriptorCountTest)
     , ("proc: setProgramName/getProgramName round-trip", prognameTest)
     , ("random: getEntropy returns requested lengths", getEntropyTest)
     , ("rtable: getRtable works unprivileged", rtableGetTest)
     , ("rtable: setRtable enforces existing domains", rtableTest)
+    , ("rtable: setRtable rejects out-of-range domains", rtableOutOfRangeTest)
     , ("memory: timingSafeEqual semantics", timingSafeEqualTest)
     , ("memory: timingSafeCompare semantics", timingSafeCompareTest)
-    , ("memory: mimmutable keeps reads working", immutableBytesReadTest)
-    , ("memory: mimmutable blocks protection changes", immutableBytesProtectionTest)
+    , ("memory: mimmutable keeps reads working", immutableMemoryReadTest)
+    , ("memory: mimmutable blocks protection changes", immutableMemoryProtectionTest)
     , ("memory: explicitBzero zeroes the buffer", explicitBzeroTest)
     , ("memory: freeZero releases the buffer", freeZeroTest)
     , ("auth: cryptNewhash/cryptCheckpass round-trip", cryptCheckpassTest)
@@ -1396,6 +1450,7 @@ runtimeTests =
     , ("priv: dropPrivileges fully drops identity (root)", dropPrivilegesTest)
     , ("priv: Initgroups policy (root)", dropPrivilegesInitgroupsTest)
     , ("priv: unknown user is reported", dropUnknownUserTest)
+    , ("priv: dropPrivileges refuses the root account", dropRootRefusedTest)
     , ("priv: dropPrivileges fails with EPERM without privileges", dropUnprivilegedTest)
     , ("priv: setResUserID/setResGroupID honor the -1 passthrough", setResPassthroughTest)
     , ("priv: id promise can be removed after dropping (root)", pledgeIdLifecycleTest)

@@ -210,15 +210,23 @@ processes that genuinely need the account's group memberships.
 earlier — useful when the account must be looked up before `chroot(2)`
 hides the password database.
 
+The name-based `dropPrivileges` and `dropPrivilegesWith` refuse the
+`root` account: dropping "to root" would leave the process fully
+privileged while appearing to have succeeded.  Only the lower-level
+`dropPrivilegesTo`, which takes an explicitly constructed `Account`,
+allows it.
+
 After the drop, the library verifies that the real, effective and
 saved UIDs/GIDs and the supplementary groups are the expected values
 and raises an exception otherwise.  The whole transition runs with
-Haskell asynchronous exceptions masked, so another thread cannot
-interrupt it halfway through.  Each failing step raises an `IOError`
-carrying the underlying `errno` (typically `EPERM` if the process is
-not root); after a partial failure the process may already have
-reduced privileges, so callers must treat the exception as fatal for
-the current process.
+asynchronous exceptions masked on the dropping thread, so an
+asynchronous exception cannot be delivered between the steps;
+masking protects only against Haskell asynchronous exceptions,
+however, and does not make the individual kernel calls atomic.  Each
+failing step raises an `IOError` carrying the underlying `errno`
+(typically `EPERM` if the process is not root); after a partial
+failure the process may already have reduced privileges, so callers
+must treat the exception as fatal for the current process.
 
 ### Why not setusercontext(3)?
 
@@ -300,10 +308,19 @@ serve = pure ()
 
 * Every failing call raises an `IOError` whose `errno` is the error
   reported by the kernel (`EPERM`, `EINVAL`, `ENOENT`, ...).
+* A few calls additionally reject arguments that the kernel cannot
+  represent faithfully: negative or oversized buffer lengths, a
+  routing domain that does not fit in a C `int`, dropping to the
+  `root` account by name, and so on.  These raise an `IOError` too,
+  but describe a library-level rejection rather than a kernel
+  `errno`.
 * `pledge(2)` violations do not raise Haskell exceptions: the kernel
   aborts the process with an uncatchable `SIGABRT`.
 * `unveil(2)` denials surface later as `EACCES`/`ENOENT` errors at the
   filesystem call site.
+* `closefrom(2)` reports `EBADF` when the argument is greater than
+  every open descriptor; the library surfaces that error rather than
+  treating it as a no-op.
 * Strings that cross the FFI boundary (account names, unveil paths)
   must not contain embedded `NUL` bytes; the library rejects them
   explicitly instead of letting C string conversion truncate them.
@@ -433,7 +450,7 @@ surface and the precise reasons behind deferred facilities.
 | `arc4random(3)` family | `System.OpenBSD.Random` | supported |
 | `getentropy(2)` | `System.OpenBSD.Random` | supported (low-level, native 256-byte limit) |
 | `getrtable(2)`/`setrtable(2)` | `System.OpenBSD.Rtable` | supported |
-| `mimmutable(2)` | `System.OpenBSD.Memory` | supported |
+| `mimmutable(2)` | `System.OpenBSD.Memory` | supported (explicit native mappings only) |
 | `explicit_bzero(3)`, `freezero(3)` | `System.OpenBSD.Memory` | supported (explicit native memory only) |
 | `timingsafe_bcmp(3)`, `timingsafe_memcmp(3)` | `System.OpenBSD.Memory` | supported |
 | `crypt_checkpass(3)`, `crypt_newhash(3)` | `System.OpenBSD.Authentication` | supported |
@@ -462,6 +479,10 @@ OpenBSD 8.0 and OpenBSD-current.
   7.9.  The flag currently gates `getexecpath(3)`
   (`System.OpenBSD.Process.getExecPath`); its symbol does not exist in
   7.9's libc.
+* Both flag states are type-checked, but only the default (7.9) build
+  is exercised against a real kernel in CI; the `openbsd80` build must
+  be validated on OpenBSD 8.0 or -current, where `getexecpath(3)`
+  exists.
 * The `Promise` list was verified against the kernel's
   `pledgereq` table in `sys/kern/kern_pledge.c` (rev 1.356 for 7.9,
   1.369 for current): 35 promises, `tmppath` removed, `disklabel`,
@@ -526,7 +547,9 @@ it:
   effective and saved UID/GID drops and the inability to regain root
   are exercised against the actual kernel.
 
-Only OpenBSD 7.9 is exercised in CI (amd64 and arm64).  The workflow
+Only OpenBSD 7.9 is exercised in CI (amd64 and arm64); the
+`openbsd80` Cabal flag is therefore not built or run there, because
+the symbols it gates do not exist in 7.9's libc.  The workflow
 configuration itself is statically validated locally with `yamllint
 --strict` and `zizmor` (pedantic persona); every third-party action is
 pinned to a full commit SHA and GitHub token permissions are minimal.
