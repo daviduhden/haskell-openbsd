@@ -36,7 +36,7 @@ import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Marshal.Array (allocaArray, peekArray)
 import Foreign.Ptr (Ptr, castPtr, intPtrToPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, pokeByteOff)
-import qualified GHC.IO.Exception as IOE
+import GHC.IO.Exception qualified as IOE
 import System.Directory (
     createDirectoryIfMissing,
     doesDirectoryExist,
@@ -1468,10 +1468,10 @@ runtimeTests =
     , ("random: arc4random works under pledge stdio", arc4randomPledgeTest)
     , ("proc: daemonize detaches the process", daemonizeTest)
     , ("proc: daemonize can preserve cwd and streams", daemonizePreserveTest)
-#ifdef OPENBSD_80
-    , ("proc: getExecPath returns an absolute path", getExecPathTest)
-#endif
     ]
+#ifdef OPENBSD_80
+        ++ [("proc: getExecPath returns an absolute path", getExecPathTest)]
+#endif
 
 tests :: [(String, IO Result)]
 tests = pureTests ++ runtimeTests
