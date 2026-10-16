@@ -29,6 +29,8 @@ are pinned for the whole call (@withCString@, @useAsCString@ and
 The 'c_hsSetproctitle'\/'c_hsResetproctitle' pair wraps the tiny C
 shim in @cbits\/openbsd.c@; see there for the rationale.
 -}
+
+{- FOURMOLU_DISABLE -}
 module System.OpenBSD.Internal (
     c_pledge,
     c_unveil,
@@ -66,6 +68,7 @@ module System.OpenBSD.Internal (
     checkNoNul,
     withMaybeCString,
 ) where
+{- FOURMOLU_ENABLE -}
 
 import Data.Word (Word32)
 import Foreign.C.String (CString, withCString)

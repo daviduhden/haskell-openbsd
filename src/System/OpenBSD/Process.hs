@@ -59,6 +59,8 @@ those descendants share a common promise ceiling.  Independent
 per-child policies require a fresh-process boundary (for example a
 minimal native launcher), which this package does not provide.
 -}
+
+{- FOURMOLU_DISABLE -}
 module System.OpenBSD.Process (
     -- * Process titles
     setProcessTitle,
@@ -88,6 +90,7 @@ module System.OpenBSD.Process (
     daemonize,
     daemonizeWith,
 ) where
+{- FOURMOLU_ENABLE -}
 
 import Control.Monad (when)
 import Foreign.C.Error (throwErrnoIfMinus1_)
@@ -99,9 +102,6 @@ import Foreign.Ptr (nullPtr)
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (..), hClose, openFile)
 import System.OpenBSD.Internal (
-#ifdef OPENBSD_80
-    c_getexecpath,
-#endif
     c_closefrom,
     c_getdtablecount,
     c_getprogname,
@@ -110,6 +110,9 @@ import System.OpenBSD.Internal (
     c_setprogname,
     checkNoNul,
  )
+#ifdef OPENBSD_80
+import System.OpenBSD.Internal (c_getexecpath)
+#endif
 import System.OpenBSD.Pledge (Promise, pledgeChild)
 import System.Posix.Directory (changeWorkingDirectory)
 import System.Posix.IO (
