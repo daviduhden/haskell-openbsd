@@ -194,7 +194,10 @@ This sets the /current/ promises of the process.  Once a promise
 has been revoked it cannot be regained: subsequent calls may only
 reduce the set further, and an attempt to increase it fails with an
 @EPERM@ 'System.IO.Error.IOError'.  The restriction cannot be
-undone, not even by re-executing the process.
+undone within the current process image.  A successful exec applies
+the separately configured exec promises; without exec promises,
+the kernel clears the current pledge and unveil state.  The current
+promises must first permit that exec.
 -}
 pledge :: [Promise] -> IO ()
 pledge promises = pledgeParts (Just promises) Nothing

@@ -38,6 +38,14 @@ directly as possible.  'forkExec' and 'forkExecPledged' implement
 exactly this pattern, including pre-fork validation of every
 string that crosses the exec boundary.
 
+With the @openbsd80@ flag, the removed execution promise cannot
+be requested.  On kernels that require it for @execve(2)@, the
+caller must remain unpledged to execute a program.  Setting exec
+promises does not grant execution permission to the caller or the
+new image; a pledged new image cannot subsequently execute other
+programs without that permission.  These helpers do not substitute
+for a removed kernel promise.
+
 The post-fork child is not a normal Haskell runtime environment:
 'System.Posix.Process.forkProcess' copies only the current thread
 into the child, and upstream GHC documents that it is not well
