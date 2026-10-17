@@ -42,6 +42,7 @@ flag openbsd80
         Bind interfaces that first appeared in OpenBSD 8.0.  Enabling this
         flag makes the package require OpenBSD 8.0 or later, because the
         added symbols do not exist in OpenBSD 7.9's libc.
+        Also excludes exec and error from the typed pledge inventory.
     default:  False
     manual:   True
 

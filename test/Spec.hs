@@ -308,8 +308,10 @@ promiseNamesTest = do
             , "dns"
             , "dpath"
             , "drm"
+#ifndef OPENBSD_80
             , "error"
             , "exec"
+#endif
             , "fattr"
             , "flock"
             , "getpw"
@@ -353,6 +355,13 @@ promiseFromNameTest =
             && promiseFromName "tmppath" == Nothing
             && promiseFromName "" == Nothing
             && promiseFromName "bogus" == Nothing
+#ifdef OPENBSD_80
+            && promiseFromName "exec" == Nothing
+            && promiseFromName "error" == Nothing
+#else
+            && promiseFromName "exec" == Just Exec
+            && promiseFromName "error" == Just Error
+#endif
         )
         "promiseFromName round-trip mismatch"
 

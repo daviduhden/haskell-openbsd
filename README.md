@@ -130,13 +130,22 @@ native launcher), which this package does not provide.
 
 ### Notes
 
-* The `Error` promise changes violations from aborting the process to
-  returning `ENOSYS`; promise increases are then silently ignored.
+* Without `openbsd80`, the `Error` promise changes violations from aborting
+  the process to returning `ENOSYS`; promise increases are then silently ignored.
 * The `tmppath` promise has been removed from OpenBSD (`pledge(2)`
   returns `EINVAL` for it) and is deliberately not exposed.  Use
   `rpath wpath cpath` plus `unveil "/tmp" "rwc"` instead.
 * The `Promise` enumeration matches the promise list accepted by the
-  kernel on OpenBSD 7.9 and OpenBSD-current.
+  kernel on OpenBSD 7.9; the OpenBSD 8.0 option excludes `exec` and `error`.
+
+With `openbsd80` enabled, the typed pledge inventory excludes `exec` and
+`error`. Without that option, both legacy promises remain available.
+
+Excluding these names from the typed API does not change kernel behavior.
+On kernels requiring `exec`, a process pledged without it cannot execute
+another program. The execution-promises examples require that kernel
+capability and are not a replacement for it.
+
 
 ## unveil
 
