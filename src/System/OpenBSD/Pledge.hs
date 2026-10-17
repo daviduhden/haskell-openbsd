@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 {- |
 Module      : System.OpenBSD.Pledge
 Description : OpenBSD pledge(2): restrict system operations
@@ -9,9 +11,10 @@ the declared set.
 
 Every call is /monotonic/: it may only reduce the set of available
 promises.  Attempts to increase permissions fail with an @EPERM@
-'System.IO.Error.IOError' (unless the 'Error' promise is active, in
-which case the increase is silently ignored).  Once revoked, a
-promise can never be regained; there is deliberately no bracket
+'System.IO.Error.IOError' (unless the @error@ promise is active, in
+which case the increase is silently ignored).  That promise is exposed
+only without the @openbsd80@ flag.  Once revoked, a promise can never
+be regained; there is deliberately no bracket
 combinator in this module, because the restriction cannot be
 undone.
 
@@ -43,7 +46,7 @@ import System.OpenBSD.Internal (c_pledge, withMaybeCString)
 requested in a call to @pledge(2)@.
 
 This enumeration matches the promise list accepted by the kernel on
-OpenBSD 7.9 and OpenBSD-current (see @sys\/kern\/kern_pledge.c@).
+OpenBSD 7.9; @OPENBSD_80@ excludes @exec@ and @error@.
 The @\"tmppath\"@ promise is deliberately /not/ represented: it was
 removed from OpenBSD, and using it causes @pledge(2)@ to fail with
 @EINVAL@.
@@ -68,10 +71,12 @@ data Promise
       Dpath
     | -- | drm(4) @ioctl@ operations
       Drm
+#ifndef OPENBSD_80
     | -- | return @ENOSYS@ on violations instead of being killed
       Error
     | -- | execute processes with @execve(2)@
       Exec
+#endif
     | -- | change @struct stat@ fields of files
       Fattr
     | -- | file locking
@@ -134,8 +139,10 @@ promiseName Disklabel = "disklabel"
 promiseName Dns = "dns"
 promiseName Dpath = "dpath"
 promiseName Drm = "drm"
+#ifndef OPENBSD_80
 promiseName Error = "error"
 promiseName Exec = "exec"
+#endif
 promiseName Fattr = "fattr"
 promiseName Flock = "flock"
 promiseName Getpw = "getpw"
