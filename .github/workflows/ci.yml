@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  openbsd-79-amd64:
-    name: OpenBSD 7.9 (amd64)
+  openbsd-80-amd64:
+    name: OpenBSD 8.0 (amd64)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -26,10 +26,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build and test on OpenBSD 7.9
-        uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945  # v1.4.8
+      - name: Build and test on OpenBSD 8.0
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3  # v1.4.9
         with:
-          release: "7.9"
+          release: "8.0"
           sync-time: true
           copyback: false
           prepare: &vm-prepare |
@@ -50,7 +50,7 @@ jobs:
 
             # The package declares the C23 baseline explicitly; fail
             # fast if the native compiler cannot honour it.  Only
-            # OpenBSD 7.9 is exercised (amd64 and arm64), and it ships
+            # OpenBSD 8.0 is exercised (amd64 and arm64), and it ships
             # GHC 9.10, the first release with GHC2024.
             echo "== Checking the C23 baseline =="
             echo 'int main(void) { return 0; }' > /tmp/c23-probe.c
@@ -124,8 +124,8 @@ jobs:
             done
             echo "Privileged tests executed and passed."
 
-  openbsd-79-arm64:
-    name: OpenBSD 7.9 (arm64)
+  openbsd-80-arm64:
+    name: OpenBSD 8.0 (arm64)
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -136,10 +136,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build and test on OpenBSD 7.9
-        uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945  # v1.4.8
+      - name: Build and test on OpenBSD 8.0
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3  # v1.4.9
         with:
-          release: "7.9"
+          release: "8.0"
           arch: aarch64
           copyback: false
           prepare: *vm-prepare
