@@ -73,6 +73,9 @@ jobs:
             cabal update
             cabal build all
             cabal test all --test-show-details=direct
+            # Exercise the interfaces and tests guarded by OPENBSD_80,
+            # including getexecpath(3), against the OpenBSD 8.0 kernel.
+            cabal test all -fopenbsd80 --test-show-details=direct
             cabal check
             # The OpenBSD-packaged GHC 9.10 / Haddock toolchain currently
             # crashes while documenting this package on both amd64 and arm64.
@@ -96,7 +99,7 @@ jobs:
             fi
 
             echo "== Privileged tests as root =="
-            TESTBIN=$(find dist-newstyle -type f -name openbsd-tests -perm -111 | head -n 1)
+            TESTBIN=$(cabal list-bin -fopenbsd80 test:openbsd-tests | tail -n 1)
             if [ -z "$TESTBIN" ]; then
                 echo "ERROR: built test binary not found" >&2
                 exit 1
