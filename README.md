@@ -488,10 +488,8 @@ OpenBSD 8.0 and OpenBSD-current.
   7.9.  The flag currently gates `getexecpath(3)`
   (`System.OpenBSD.Process.getExecPath`); its symbol does not exist in
   7.9's libc.
-* Both flag states are type-checked, but only the default (7.9) build
-  is exercised against a real kernel in CI; the `openbsd80` build must
-  be validated on OpenBSD 8.0 or -current, where `getexecpath(3)`
-  exists.
+* Both flag states are built and tested against a real OpenBSD 8.0
+  kernel in CI; the `openbsd80` build covers `getexecpath(3)`.
 * The `Promise` list was verified against the kernel's
   `pledgereq` table in `sys/kern/kern_pledge.c` (rev 1.356 for 7.9,
   1.369 for current): 35 promises, `tmppath` removed, `disklabel`,
@@ -535,7 +533,7 @@ not root.  Some pledge tests expect the child process to die with
 
 ## Continuous integration
 
-GitHub Actions boots a real OpenBSD 7.9 virtual machine
+GitHub Actions boots a real OpenBSD 8.0 virtual machine
 (`vmactions/openbsd-vm`), on both amd64 and arm64, for every push to
 `main` and every pull request, and runs the full validation inside
 it:
@@ -545,20 +543,21 @@ it:
 * checks that the native C compiler accepts `-std=c23`, so the C23
   baseline is validated against the real OpenBSD toolchain rather than
   assumed;
-* `cabal update`, `cabal build all`, `cabal test all`, `cabal check`
-  and `cabal sdist`, executed as an unprivileged `builder` user, and
-  the generated source distribution is itself built and tested;
-  Haddock is currently skipped there because the OpenBSD-packaged GHC
-  9.10 / Haddock toolchain crashes while building this package's
-  documentation on both amd64 and arm64;
-* runs the test suite again as `root`, and fails if the
+* `cabal update`, `cabal build all`, `cabal test all` in both flag
+  states, `cabal check` and `cabal sdist`, executed as an unprivileged
+  `builder` user, and the generated source distribution is itself
+  built and tested in the default flag state; Haddock is currently
+  skipped there because the OpenBSD-packaged GHC 9.10 / Haddock
+  toolchain crashes while building this package's documentation on
+  both amd64 and arm64;
+* runs the `openbsd80` test suite again as `root`, and fails if the
   privilege-dropping tests are skipped or do not pass, so the real,
   effective and saved UID/GID drops and the inability to regain root
   are exercised against the actual kernel.
 
-Only OpenBSD 7.9 is exercised in CI (amd64 and arm64); the
-`openbsd80` Cabal flag is therefore not built or run there, because
-the symbols it gates do not exist in 7.9's libc.  The workflow
-configuration itself is statically validated locally with `yamllint
---strict` and `zizmor` (pedantic persona); every third-party action is
-pinned to a full commit SHA and GitHub token permissions are minimal.
+Both the default (7.9-compatible) build and the `openbsd80` build are
+exercised on OpenBSD 8.0 (amd64 and arm64); the latter covers
+`getexecpath(3)`.  The workflow configuration itself is statically
+validated locally with `yamllint --strict` and `zizmor` (pedantic
+persona); every third-party action is pinned to a full commit SHA and
+GitHub token permissions are minimal.
