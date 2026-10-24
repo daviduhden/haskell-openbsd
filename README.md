@@ -525,11 +525,14 @@ the build does not depend on the compiler defaults:
 cabal test
 ```
 
-Runtime tests exercise the real kernel interfaces in forked child
-processes.  Tests that require root (privilege dropping, the
-`id`-promise lifecycle) are skipped cleanly when the test runner is
-not root.  Some pledge tests expect the child process to die with
-`SIGABRT`, which is normal and part of the test.
+Runtime tests exercise the real kernel interfaces, mostly in forked
+child processes; account resolution, native C probes, and the manual
+fork checks (titles, `closefrom`, daemonization, set-ID exec) use the
+runner or a dedicated child.  Tests that require root (privilege
+dropping, the `id`-promise lifecycle, `enterChroot`, and set-ID exec)
+are skipped cleanly when the test runner is not root.  Some pledge
+tests expect the child process to die with `SIGABRT`, which is normal
+and part of the test.
 
 ## Continuous integration
 
