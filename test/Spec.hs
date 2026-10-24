@@ -156,6 +156,10 @@ expectIOError context action = do
         Left (_ :: IOException) -> pure Pass
         Right _ -> pure (Fail ("expected an IOError: " ++ context))
 
+-- | The numeric code behind an 'Errno'.  'Errno' has no 'Show' instance.
+errnoValue :: Errno -> CInt
+errnoValue (Errno code) = code
+
 {- | Require an action to fail with a specific native @errno@.  This is
 stricter than 'isPermissionError', which accepts both @EACCES@ and
 @EPERM@, and keeps tests whose names promise @EPERM@ honest.
@@ -171,8 +175,8 @@ assertErrno expected context action = do
                 other ->
                     fail
                         ( context
-                            ++ ": expected "
-                            ++ show expected
+                            ++ ": expected errno "
+                            ++ show (errnoValue expected)
                             ++ ", got "
                             ++ displayException e
                             ++ " (errno "
@@ -182,8 +186,8 @@ assertErrno expected context action = do
         Right _ ->
             fail
                 ( context
-                    ++ ": expected "
-                    ++ show expected
+                    ++ ": expected errno "
+                    ++ show (errnoValue expected)
                     ++ ", but the call succeeded"
                 )
 
