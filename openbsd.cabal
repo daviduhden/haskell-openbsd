@@ -1,6 +1,6 @@
 cabal-version:      2.4
 name:               openbsd
-version:            2.5.0
+version:            3.0.0
 synopsis:           OpenBSD security facilities: pledge(2), unveil(2), privilege dropping
 description:
     Haskell bindings for the OpenBSD-specific security interfaces and

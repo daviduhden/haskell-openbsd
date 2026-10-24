@@ -1,10 +1,10 @@
 /*
  * Execpledge probe for the fork + immediate-exec integration test.
  *
- * Started by a Haskell parent that forks with forkProcess, sets
- * execpromises to "stdio" in the child, and immediately execs this
- * program.  The fresh process image begins pledged with exactly those
- * promises.
+ * Started by a Haskell caller that sets execpromises to "stdio"
+ * before the exec: either in the parent before forkProcess, or in the
+ * current process before executeFile.  The fresh process image begins
+ * pledged with exactly those promises.
  *
  *   no arguments: perform only stdio-class operations (getpid, a
  *                 write to the inherited stdout) and exit 0;
