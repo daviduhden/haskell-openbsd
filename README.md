@@ -571,8 +571,8 @@ frontmatter structure, and resolves local Markdown links. Run the same
 check locally against the working tree with:
 
 ```sh
-ruff check scripts/check-agent-sync.py
-python3 scripts/check-agent-sync.py
+perl -c scripts/check-agent-sync.pl
+perl scripts/check-agent-sync.pl
 ```
 
 For a committed change set, pass explicit Git refs with `--base BASE

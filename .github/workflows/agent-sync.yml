@@ -27,4 +27,4 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 scripts/check-agent-sync.py --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: perl scripts/check-agent-sync.pl --base "$BASE_SHA" --head "$HEAD_SHA"
