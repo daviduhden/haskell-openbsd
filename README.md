@@ -536,10 +536,9 @@ and part of the test.
 
 ## Continuous integration
 
-GitHub Actions boots a real OpenBSD 8.0 virtual machine
-(`vmactions/openbsd-vm`), on both amd64 and arm64, for every push to
-`main` and every pull request, and runs the full validation inside
-it:
+The `CI` workflow can be started manually and boots a real OpenBSD 8.0
+virtual machine (`vmactions/openbsd-vm`) on amd64 and arm64 to run full
+validation inside it:
 
 * installs the native OpenBSD Haskell toolchain (GHC 9.10, the first
   release with GHC2024, and cabal-install) with `pkg_add`;
@@ -564,3 +563,17 @@ exercised on OpenBSD 8.0 (amd64 and arm64); the latter covers
 validated locally with `yamllint --strict` and `zizmor` (pedantic
 persona); every third-party action is pinned to a full commit SHA and
 GitHub token permissions are minimal.
+
+The separate **Agent knowledge synchronization** workflow runs on every
+pull request. It checks that project-file changes include substantive
+agent instruction or skill changes, validates basic Markdown/skill
+frontmatter structure, and resolves local Markdown links. Run the same
+check locally against the working tree with:
+
+```sh
+python3 scripts/check-agent-sync.py
+```
+
+For a committed change set, pass explicit Git refs with `--base BASE
+--head HEAD`. The checker enforces structural conditions; reviewers
+must still confirm that the knowledge update is relevant and correct.
