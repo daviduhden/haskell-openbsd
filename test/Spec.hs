@@ -144,6 +144,8 @@ socketPair = allocaArray 2 $ \sockets -> do
     when (result /= 0) (throwErrno "socketpair")
     (,) <$> (Fd <$> peekElemOff sockets 0) <*> (Fd <$> peekElemOff sockets 1)
 
+-- | A test result distinguishes an environmental skip from a failed
+-- assertion; skips do not make 'runTests' return failure.
 data Result = Pass | Skip String | Fail String
 
 expect :: Bool -> String -> IO Result
@@ -213,6 +215,11 @@ waitForProcess child = do
                 Just status -> pure status
                 Nothing -> pure Nothing
 
+{- | Run every named test in order, report each outcome, and aggregate
+whether any action failed or raised an exception.  A failure does not
+short-circuit the remaining tests, so one run reports as much as
+possible.
+-}
 runTests :: [(String, IO Result)] -> IO Bool
 runTests = go True
   where
@@ -301,7 +308,10 @@ expectSignal expected action = do
             pure (Fail ("child failed with exit code " ++ show code))
         _ -> pure (Fail "child vanished")
 
--- | Fork a child that execs @prog@ with @args@, capturing its stdout.
+-- | Fork a child that execs @prog@ with @args@, capturing stdout and
+-- stderr through one pipe.  The child's exec failure becomes a
+-- nonzero status, while the parent drains the pipe before checking
+-- the bounded child wait.
 captureOutput :: FilePath -> [String] -> IO (Either String String)
 captureOutput prog args = do
     (readFd, writeFd) <- createPipe
@@ -730,6 +740,11 @@ unveilNonexistentTest = inChild "unveil-enoent" $ do
         "unveil with a nonexistent directory"
         (unveil "/openbsd-test-dir-that-does-not-exist/file" [Read])
 
+{- | Verify both sides of a locked unveil policy in an isolated child:
+reading an unveiled path remains possible, while creating a file
+outside the allowed rules fails.  The parent removes the probe path
+because the child cannot do so after locking unveil.
+-}
 unveilEnforcementTest :: IO Result
 unveilEnforcementTest = do
     pid <- getProcessID
@@ -887,6 +902,11 @@ chrootEpermTest = inChild "chroot-eperm" $ do
     _ <- try (setResUserID (Just uid) (Just uid) (Just uid)) :: IO (Either IOException ())
     assertErrno ePERM "chroot without privileges" (chroot "/")
 
+{- | Exercise the complete root-only chroot transition in a child.
+The parent creates and later removes a marker directory; inside the
+child, the marker must be visible under the new root, the old @/etc@
+must be hidden, and resolving @..@ must remain at @/@.
+-}
 enterChrootTest :: IO Result
 enterChrootTest = requireRoot $ do
     pid <- getProcessID
@@ -1010,6 +1030,11 @@ getpeereidNotSockTest = inChild "getpeereid-notsock" $ do
 
 -- process-title tests
 
+{- | Coordinate with a child over pipes to inspect its process title
+with @ps(1)@ before and after reset.  The title includes printf-style
+characters so the assertion also checks that user data is not treated
+as the native format string.
+-}
 setproctitleObservableTest :: IO Result
 setproctitleObservableTest = do
     (controlRead, controlWrite) <- createPipe
@@ -1477,6 +1502,11 @@ daemonizeTest = do
                 ("unexpected daemon report: " ++ show output)
         _ -> pure (Fail ("daemonize helper failed: " ++ show status))
 
+{- | Check the opt-out behavior of 'daemonizeWith': the child creates
+a new session while retaining its original working directory and
+standard descriptors.  An inherited pipe reports the checks after
+the original helper process exits.
+-}
 daemonizePreserveTest :: IO Result
 daemonizePreserveTest = do
     originalCwd <- getCurrentDirectory

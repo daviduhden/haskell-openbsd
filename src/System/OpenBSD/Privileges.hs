@@ -228,6 +228,15 @@ dropPrivilegesTo policy account = mask_ $ do
 idValue :: (Num a) => Maybe a -> a
 idValue = maybe (-1) id
 
+{- | Verify the observable identity after the irreversible drop.
+
+All three UID and GID slots must equal the target values.  Under
+'PrimaryGroupOnly', the supplementary group list must contain exactly
+the primary GID; under 'Initgroups', it only needs to contain that
+primary GID because additional account groups are expected.  A
+mismatch is reported after the system calls have already changed the
+process, so the caller must not treat the exception as a rollback.
+-}
 verifyDrop :: GroupPolicy -> Account -> IO ()
 verifyDrop policy account = do
     let name = accountName account
