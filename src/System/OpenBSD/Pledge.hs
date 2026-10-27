@@ -184,6 +184,9 @@ promiseFromName name =
         | promise <- [minBound .. maxBound]
         ]
 
+-- | Serialize promises in caller-supplied order using the kernel names.
+-- This is the only list conversion used by the native wrapper; derived
+-- 'Show' output is diagnostic text, not a pledge(2) representation.
 promiseList :: [Promise] -> String
 promiseList = unwords . map promiseName
 

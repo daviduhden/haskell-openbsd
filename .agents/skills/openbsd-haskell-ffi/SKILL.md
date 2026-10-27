@@ -79,7 +79,11 @@ Do not make it silently build elsewhere.
    `FOURMOLU_DISABLE` markers.
 9. **Document the contract.**  State the native prototype, the failure
    value, whether `errno` is used, pointer lifetime, process-wide
-   effects, and any pledge requirement in the Haddock comment.
+   effects, and any pledge requirement in the public wrapper's Haddock
+   comment. Keep `Internal` focused on the shared FFI boundary and
+   marshalling rules; do not duplicate a full API manual on each raw
+   import. Add an import-level note only when a native ABI detail would
+   otherwise be easy to misread (for example, `off_t` versus `CInt`).
 
 ## Validation
 

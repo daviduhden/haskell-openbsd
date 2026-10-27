@@ -484,12 +484,22 @@ daemonizeWith options daemonBody = do
         exitImmediately ExitSuccess
     exitImmediately ExitSuccess >> pure ()
 
+-- | Perform the child-side setup after 'forkProcess': create a new
+-- session, then apply the requested working-directory and stream
+-- changes.  Any failure here occurs in the daemon child; the original
+-- process cannot receive it after exiting.
 daemonizeChild :: DaemonOptions -> IO ()
 daemonizeChild options = do
     _ <- createSession
     when (changeDirectoryToRoot options) (changeWorkingDirectory "/")
     when (redirectStandardStreams options) redirectToDevNull
 
+{- | Replace descriptors 0, 1, and 2 with a single @/dev/null@ file
+description.  The original descriptor is closed only when it is above
+the standard descriptor range; if opening @/dev/null@ reused one of
+0/1/2, that descriptor is already one of the desired streams and must
+remain open.
+-}
 redirectToDevNull :: IO ()
 redirectToDevNull = do
     nullHandle <- openFile "/dev/null" ReadWriteMode
