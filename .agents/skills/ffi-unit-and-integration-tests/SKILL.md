@@ -181,6 +181,12 @@ single test binary at a time is still assumed.
   writable `/tmp`, `/usr/bin/cc`, `/bin/ps`, `/dev/null`,
   `/etc/hostname`, and the `nobody` and `root` accounts.
 
+## Maintenance & Continuous Learning
+
+When this skill is used to modify this repository, review it after the implementation and before reporting completion. Update this skill when the procedure, tools, configuration, validation commands, safety constraints, or project assumptions in its area have changed. Add reusable knowledge discovered during the work and correct guidance that proved inaccurate. Keep examples, paths, and validation steps current; exclude one-off details that will not help a future task.
+
+Also review the governing `AGENTS.md`, related skills, and any specialized agent instructions. Synchronize cross-references and avoid conflicting or duplicated procedures. Run the repository maintenance validator (`python3 scripts/check-agent-sync.py --base BASE --head HEAD`, or its documented local default) and the validations above where applicable. Report which instructions were reviewed/updated and the actual validation result. A failed or skipped synchronization means the task is incomplete. For a task that changes agent/skill policy itself, one full final coherence review is sufficient; rerun checks only after correcting a detected issue.
+
 ## References
 
 - `test/Spec.hs`

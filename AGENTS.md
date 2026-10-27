@@ -131,6 +131,44 @@ not revert or reformat unrelated changes.  Read the diff before
 finishing and keep edits scoped.  Do not commit, push, tag, or open pull
 requests unless asked.
 
+## Continuous Agent & Skills Maintenance
+
+Agent instructions and skills are living repository artifacts.
+
+Every repository modification MUST include an agent/skills synchronization step.
+
+Before completing any task, inspect the applicable AGENTS.md and SKILL.md files, update the affected instructions, and validate their consistency with the implementation.
+
+A code change without the corresponding agent knowledge maintenance is considered incomplete.
+
+Never claim completion when the synchronization step has been skipped or has failed.
+
+This applies to code, tests, dependencies, configuration, workflows, documentation, architecture, and agent/skill files themselves. At the end of each task:
+
+1. Inspect all repository instruction sources with `rg --files --hidden -g 'AGENTS.md' -g '*.agent.md' -g 'SKILL.md' -g '.github/instructions/**' -g '.cursor/rules/**' -g 'CLAUDE.md' -g 'GEMINI.md' -g 'copilot-instructions.md'`. Include tool-specific files discovered by the search even if they are not listed here.
+2. Map changed paths to relevant skills using each skill's “When to use” section and specialized agent responsibilities. Review root/nested instructions governing the paths, matching skills, and directly referenced instructions.
+3. For project changes, make a substantive, reusable update to at least one applicable AGENTS.md, specialized agent file, or SKILL.md. Keep examples, commands, paths, assumptions, and validation procedures aligned with the implementation. A docs-only change may itself be the knowledge update when it changes agent-operational guidance.
+4. Update an existing skill when a reusable procedure, tool, safety rule, validation, or project assumption changes in its area. Create a skill only for a recurring, distinct responsibility with no suitable existing skill; define its trigger, procedure, validation, and references, then link it here. Do not create skills for one-off tasks.
+5. Keep specialized agents synchronized with this policy and their skills. Each must identify related skills, review them after changes, revise incorrect or stale guidance, run or delegate relevant checks, and report synchronization. Avoid duplicating skill procedures; link to the canonical skill.
+6. Validate changed instruction files: preserve skill frontmatter, require useful content, check local Markdown links and referenced paths where mechanically identifiable, and run `python3 scripts/check-agent-sync.py --base BASE --head HEAD` (or its documented local default) plus `git diff --check`.
+7. Review the complete diff for semantic relevance. Automation checks changed-file coverage, substantive text, basic structure, and resolvable local Markdown links; it cannot decide whether a knowledge update is genuinely relevant. That semantic review is mandatory.
+
+The automated check rejects project changes without a substantive instruction/skill change. If synchronization or validation cannot be completed, fix it or report the task as incomplete with the exact limitation; never silently skip it. When an instruction or skill changes, perform one complete end-of-task review of the policy, affected references, and validator. Repeat validation only to check a correction, avoiding recursive maintenance loops.
+
+### Mandatory Definition of Done
+
+- [ ] Repository changes implemented.
+- [ ] Relevant agent instructions reviewed.
+- [ ] Relevant skills reviewed.
+- [ ] Affected AGENTS.md / SKILL.md files updated.
+- [ ] Obsolete knowledge removed.
+- [ ] New reusable knowledge incorporated.
+- [ ] Agent and skill references validated.
+- [ ] Automated maintenance checks passed.
+- [ ] Final synchronization status reported.
+
+If any item fails, fix it or declare the limitation and the task incomplete. Every final report must include **Agent & Skills Synchronization** with agents reviewed, skills reviewed, instruction files updated, reusable knowledge added/corrected, validations actually run, and status **PASS** or **FAIL**.
+
 ## Skills
 
 Load the relevant skill before changing the corresponding area:
@@ -142,3 +180,5 @@ Load the relevant skill before changing the corresponding area:
 | [`process-fork-exec-safety`](.agents/skills/process-fork-exec-safety/SKILL.md) | `forkProcess`, exec promises, daemonization, descriptors, runtime caveats |
 | [`cabal-and-abi-compatibility`](.agents/skills/cabal-and-abi-compatibility/SKILL.md) | Cabal flags, GHC2024/C23, OpenBSD 7.9/8.0 gating, versioning, sdist |
 | [`ffi-unit-and-integration-tests`](.agents/skills/ffi-unit-and-integration-tests/SKILL.md) | test harness, C fixtures, root tests, expected signals, CI commands |
+
+There are currently no specialized agent definition files. If one is added, it must include a **Post-Change Knowledge Synchronization** section: identify and review related skills after every change, update changed behavior and reusable knowledge, verify its own instructions, run or delegate validations, and report the result. This policy applies regardless of agent tool or vendor.
