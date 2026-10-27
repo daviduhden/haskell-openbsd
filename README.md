@@ -571,6 +571,7 @@ frontmatter structure, and resolves local Markdown links. Run the same
 check locally against the working tree with:
 
 ```sh
+ruff check scripts/check-agent-sync.py
 python3 scripts/check-agent-sync.py
 ```
 
