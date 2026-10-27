@@ -150,10 +150,31 @@ This applies to code, tests, dependencies, configuration, workflows, documentati
 3. For project changes, make a substantive, reusable update to at least one applicable AGENTS.md, specialized agent file, or SKILL.md. Keep examples, commands, paths, assumptions, and validation procedures aligned with the implementation. A docs-only change may itself be the knowledge update when it changes agent-operational guidance.
 4. Update an existing skill when a reusable procedure, tool, safety rule, validation, or project assumption changes in its area. Create a skill only for a recurring, distinct responsibility with no suitable existing skill; define its trigger, procedure, validation, and references, then link it here. Do not create skills for one-off tasks.
 5. Keep specialized agents synchronized with this policy and their skills. Each must identify related skills, review them after changes, revise incorrect or stale guidance, run or delegate relevant checks, and report synchronization. Avoid duplicating skill procedures; link to the canonical skill.
-6. Validate changed instruction files: preserve skill frontmatter, require useful content, check local Markdown links and referenced paths where mechanically identifiable, run `perl -c scripts/check-agent-sync.pl`, and run `perl scripts/check-agent-sync.pl --base BASE --head HEAD` (or its documented local default) plus `git diff --check`.
+6. Validate changed instruction files: preserve skill frontmatter, require useful content, check local Markdown links and referenced paths where mechanically identifiable, run `python3 scripts/validate-agent-knowledge.py --help`, and run `python3 scripts/validate-agent-knowledge.py --scope range --base BASE --head HEAD` (or its documented local default) plus `git diff --check`.
 7. Review the complete diff for semantic relevance. Automation checks changed-file coverage, substantive text, basic structure, and resolvable local Markdown links; it cannot decide whether a knowledge update is genuinely relevant. That semantic review is mandatory.
 
 The automated check rejects project changes without a substantive instruction/skill change. If synchronization or validation cannot be completed, fix it or report the task as incomplete with the exact limitation; never silently skip it. When an instruction or skill changes, perform one complete end-of-task review of the policy, affected references, and validator. Repeat validation only to check a correction, avoiding recursive maintenance loops.
+
+### Shared Agent Knowledge Validation Contract
+
+Use `python3 scripts/validate-agent-knowledge.py --scope worktree` for local
+changes and `python3 -m unittest discover -s tests/agent_knowledge_validator -v`
+for its contract tests. The validator requires Python 3.11+ and Git, uses only
+the Python standard library, and publishes contract version `1.0.0`. All
+adopting repositories share the same CLI, AK001-AK006 identifiers, output
+schema, and exit codes (`0` pass, `1` policy failure, `2` execution/configuration
+error). For a pull request, pass both revisions with
+`--scope range --base BASE_REF --head HEAD_REF`; compare from their merge base.
+
+Read [Agent Knowledge Validation Contract](docs/agent-knowledge-validation.md)
+for the complete rules, JSON schema, optional repository configuration,
+warning semantics, and extension process. AK004 and AK006 can require human
+review; their warnings do not prove or disprove semantic correctness. Keep the
+canonical script and black-box unittest suite byte-identical across adopting
+repositories. Repository-specific requirements belong in the documented TOML
+configuration or a stable `AKX...` extension, never in a private fork of the
+shared rules. The GitHub PR workflow runs the same tests and range command;
+it does not edit files or require secrets.
 
 ### Mandatory Definition of Done
 
