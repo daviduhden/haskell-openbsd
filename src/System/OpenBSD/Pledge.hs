@@ -54,6 +54,7 @@ removed from OpenBSD, and using it causes @pledge(2)@ to fail with
 The 'Show' instance is derived and renders Haskell constructor
 names; use 'promiseName' for native serialization.
 -}
+{- FOURMOLU_DISABLE -}
 data Promise
     = -- | audio(4) device @ioctl@ operations
       Audio
@@ -128,6 +129,7 @@ data Promise
     | -- | change the routing table
       Wroute
     deriving (Eq, Ord, Enum, Bounded, Show)
+{- FOURMOLU_ENABLE -}
 
 -- | The string name of a promise, exactly as accepted by @pledge(2)@.
 promiseName :: Promise -> String
@@ -184,9 +186,10 @@ promiseFromName name =
         | promise <- [minBound .. maxBound]
         ]
 
--- | Serialize promises in caller-supplied order using the kernel names.
--- This is the only list conversion used by the native wrapper; derived
--- 'Show' output is diagnostic text, not a pledge(2) representation.
+{- | Serialize promises in caller-supplied order using the kernel names.
+This is the only list conversion used by the native wrapper; derived
+'Show' output is diagnostic text, not a pledge(2) representation.
+-}
 promiseList :: [Promise] -> String
 promiseList = unwords . map promiseName
 

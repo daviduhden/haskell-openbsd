@@ -144,8 +144,9 @@ socketPair = allocaArray 2 $ \sockets -> do
     when (result /= 0) (throwErrno "socketpair")
     (,) <$> (Fd <$> peekElemOff sockets 0) <*> (Fd <$> peekElemOff sockets 1)
 
--- | A test result distinguishes an environmental skip from a failed
--- assertion; skips do not make 'runTests' return failure.
+{- | A test result distinguishes an environmental skip from a failed
+assertion; skips do not make 'runTests' return failure.
+-}
 data Result = Pass | Skip String | Fail String
 
 expect :: Bool -> String -> IO Result
@@ -308,10 +309,11 @@ expectSignal expected action = do
             pure (Fail ("child failed with exit code " ++ show code))
         _ -> pure (Fail "child vanished")
 
--- | Fork a child that execs @prog@ with @args@, capturing stdout and
--- stderr through one pipe.  The child's exec failure becomes a
--- nonzero status, while the parent drains the pipe before checking
--- the bounded child wait.
+{- | Fork a child that execs @prog@ with @args@, capturing stdout and
+stderr through one pipe.  The child's exec failure becomes a
+nonzero status, while the parent drains the pipe before checking
+the bounded child wait.
+-}
 captureOutput :: FilePath -> [String] -> IO (Either String String)
 captureOutput prog args = do
     (readFd, writeFd) <- createPipe
@@ -379,6 +381,7 @@ issetugidProbeFixture = do
 
 -- Pure tests
 
+{- FOURMOLU_DISABLE -}
 promiseNamesTest :: IO Result
 promiseNamesTest = do
     let names = map promiseName [minBound .. maxBound :: Promise]
@@ -427,7 +430,9 @@ promiseNamesTest = do
             && all (not . any (== ' ')) names
         )
         ("promise serialization mismatch: " ++ show names)
+{- FOURMOLU_ENABLE -}
 
+{- FOURMOLU_DISABLE -}
 promiseFromNameTest :: IO Result
 promiseFromNameTest =
     expect
@@ -447,6 +452,7 @@ promiseFromNameTest =
 #endif
         )
         "promiseFromName round-trip mismatch"
+{- FOURMOLU_ENABLE -}
 
 unveilPermissionsTest :: IO Result
 unveilPermissionsTest =
@@ -963,37 +969,37 @@ not depend on the filesystem honoring set-ID bits, which varies by
 environment, and exercises the same taint mechanism.
 -}
 issetugidSuidExecTest :: IO Result
-issetugidSuidExecTest = requireRoot $
-    bracket
+issetugidSuidExecTest = requireRoot
+    $ bracket
         issetugidProbeFixture
         (\probe -> ignoreIOException (removeFile probe))
-        $ \probe -> do
-            nobody <- accountByName "nobody"
-            let uid = accountUid nobody
-            (readFd, writeFd) <- createPipe
-            child <- forkProcess $ do
-                closeFd readFd
-                _ <- dupTo writeFd stdOutput
-                closeFd writeFd
-                setResUserID (Just 0) (Just uid) Nothing
-                _ <- executeFile probe True [] Nothing
-                _ <- exitImmediately (ExitFailure 127)
-                pure ()
+    $ \probe -> do
+        nobody <- accountByName "nobody"
+        let uid = accountUid nobody
+        (readFd, writeFd) <- createPipe
+        child <- forkProcess $ do
+            closeFd readFd
+            _ <- dupTo writeFd stdOutput
             closeFd writeFd
-            output <- timeout 60000000 $
-                bracket (fdToHandle readFd) hClose $ \h -> do
-                    hSetBinaryMode h True
-                    captured <- hGetContents h
-                    _ <- evaluate (length captured)
-                    pure captured
-            status <- waitForProcess child
-            case (output, status) of
-                (Just "1\n", Just (Exited ExitSuccess)) -> pure Pass
-                (Just "1\n", other) ->
-                    pure (Fail ("set-ID probe exited unexpectedly: " ++ show other))
-                (Just other, _) ->
-                    pure (Fail ("set-ID exec not detected, got: " ++ show other))
-                (Nothing, _) -> pure (Fail "probe timed out")
+            setResUserID (Just 0) (Just uid) Nothing
+            _ <- executeFile probe True [] Nothing
+            _ <- exitImmediately (ExitFailure 127)
+            pure ()
+        closeFd writeFd
+        output <- timeout 60000000 $
+            bracket (fdToHandle readFd) hClose $ \h -> do
+                hSetBinaryMode h True
+                captured <- hGetContents h
+                _ <- evaluate (length captured)
+                pure captured
+        status <- waitForProcess child
+        case (output, status) of
+            (Just "1\n", Just (Exited ExitSuccess)) -> pure Pass
+            (Just "1\n", other) ->
+                pure (Fail ("set-ID probe exited unexpectedly: " ++ show other))
+            (Just other, _) ->
+                pure (Fail ("set-ID exec not detected, got: " ++ show other))
+            (Nothing, _) -> pure (Fail "probe timed out")
 
 getpeereidTest :: IO Result
 getpeereidTest = inChild "getpeereid" $ do
@@ -1549,6 +1555,7 @@ pureTests =
     ]
         ++ nulRejectionTests
 
+{- FOURMOLU_DISABLE -}
 runtimeTests :: [(String, IO Result)]
 runtimeTests =
     [ ("pledge: empty promise list restricts to _exit", pledgeEmptyTest)
@@ -1609,10 +1616,12 @@ runtimeTests =
 #ifdef OPENBSD_80
         ++ [("proc: getExecPath returns an absolute path", getExecPathTest)]
 #endif
+{- FOURMOLU_ENABLE -}
 
 tests :: [(String, IO Result)]
 tests = pureTests ++ runtimeTests
 
+{- FOURMOLU_DISABLE -}
 main :: IO ()
 main = do
     hSetBuffering stdout LineBuffering
@@ -1624,3 +1633,4 @@ main = do
     ok <- runTests pureTests
 #endif
     unless ok (exitWith (ExitFailure 1))
+{- FOURMOLU_ENABLE -}

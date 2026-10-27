@@ -484,10 +484,11 @@ daemonizeWith options daemonBody = do
         exitImmediately ExitSuccess
     exitImmediately ExitSuccess >> pure ()
 
--- | Perform the child-side setup after 'forkProcess': create a new
--- session, then apply the requested working-directory and stream
--- changes.  Any failure here occurs in the daemon child; the original
--- process cannot receive it after exiting.
+{- | Perform the child-side setup after 'forkProcess': create a new
+session, then apply the requested working-directory and stream
+changes.  Any failure here occurs in the daemon child; the original
+process cannot receive it after exiting.
+-}
 daemonizeChild :: DaemonOptions -> IO ()
 daemonizeChild options = do
     _ <- createSession
