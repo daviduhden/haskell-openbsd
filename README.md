@@ -571,8 +571,8 @@ frontmatter structure, and resolves local Markdown links. Run the same
 check locally against the working tree with:
 
 ```sh
-python3 scripts/validate-agent-knowledge.py --help
-python3 scripts/validate-agent-knowledge.py --scope worktree
+perl scripts/validate-agent-knowledge.pl --help
+perl scripts/validate-agent-knowledge.pl --scope worktree
 ```
 
 For a committed change set, pass explicit Git refs with `--base BASE
