@@ -564,10 +564,11 @@ validated locally with `yamllint --strict` and `zizmor` (pedantic
 persona); every third-party action is pinned to a full commit SHA and
 GitHub token permissions are minimal.
 
-The separate **Agent knowledge synchronization** workflow runs on every
-pull request. It checks that project-file changes include substantive
-agent instruction or skill changes, validates basic Markdown/skill
-frontmatter structure, and resolves local Markdown links. Run the same
+The separate **Agent knowledge synchronization** workflow is manual-only
+(start it with `gh workflow run`); it runs on the checked-out worktree. It
+checks that project-file changes include substantive agent instruction or
+skill changes, validates basic Markdown/skill frontmatter structure, and
+resolves local Markdown links. Run the same
 check locally against the working tree with:
 
 ```sh
