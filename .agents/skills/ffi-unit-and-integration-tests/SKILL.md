@@ -109,7 +109,7 @@ a direct binary invocation from another directory does not.
 Both `.github/workflows/ci.yml` and
 `.github/workflows/agent-knowledge-validation.yml` pin external actions to a
 full commit SHA with a trailing release comment. Never restore a floating tag
-such as `@v4`; the pull-request knowledge workflow and the OpenBSD VM job are
+such as `@v4`; the manual-only knowledge workflow and the OpenBSD VM job are
 separate files and must be updated together.
 
 | Action | Version | Commit |
