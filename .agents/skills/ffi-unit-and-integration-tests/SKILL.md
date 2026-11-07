@@ -104,6 +104,28 @@ relative (`test/fixtures/...`), so the test process must run with the
 package root as its working directory.  `cabal test` and CI do this;
 a direct binary invocation from another directory does not.
 
+## CI workflow action pins
+
+Both `.github/workflows/ci.yml` and
+`.github/workflows/agent-knowledge-validation.yml` pin external actions to a
+full commit SHA with a trailing release comment. Never restore a floating tag
+such as `@v4`; the pull-request knowledge workflow and the OpenBSD VM job are
+separate files and must be updated together.
+
+| Action | Version | Commit |
+| --- | --- | --- |
+| `actions/checkout` | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` |
+| `vmactions/openbsd-vm` | v1.4.9 | `f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3` |
+
+The VM action is pinned because it boots the OpenBSD 8.0 amd64/arm64 guest and
+executes the `prepare`/`run` scripts as root; a retagged release or a newer
+tag could change boot, SSH, or script execution and alter the kernel evidence
+without any repository diff. To update a pin, dereference the tag
+(`https://api.github.com/repos/OWNER/REPO/git/ref/tags/TAG`), confirm the
+commit, keep the `# vX.Y.Z` comment accurate, and change nothing else in the
+workflow. Static `yamllint --strict` is the only host-side check; it does not
+prove the VM job passes.
+
 ## Validation
 
 Static checks (any host):
