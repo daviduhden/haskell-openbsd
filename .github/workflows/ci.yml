@@ -64,7 +64,8 @@ jobs:
             cabal build all
             cabal test all --test-show-details=direct
             cabal check
-            cabal haddock all --haddock-options=--no-warnings
+            # The OpenBSD-packaged GHC 9.10 / Haddock toolchain currently
+            # crashes while documenting this package on both amd64 and arm64.
             cabal sdist
             SDIST_TAR=$(ls dist-newstyle/sdist/openbsd-*.tar.gz | head -n 1)
             rm -rf /tmp/sdist-check
